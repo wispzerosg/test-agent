@@ -18,14 +18,14 @@ class FakeBenchmarkAgent(BenchmarkAgent):
         return ["SWE-bench/SWE-bench_Verified", "cais/hle"]
 
     async def _get_json(self, url: str, params=None):
-        if url.endswith("/api/datasets/SWE-bench%2FSWE-bench_Verified"):
+        if url.endswith("/api/datasets/SWE-bench/SWE-bench_Verified"):
             return {
                 "id": "SWE-bench/SWE-bench_Verified",
                 "description": "Software engineering coding benchmark for LLMs.",
             }
-        if url.endswith("/api/datasets/cais%2Fhle"):
+        if url.endswith("/api/datasets/cais/hle"):
             return {"id": "cais/hle", "description": "Reasoning benchmark."}
-        if url.endswith("/api/datasets/SWE-bench%2FSWE-bench_Verified/leaderboard"):
+        if url.endswith("/api/datasets/SWE-bench/SWE-bench_Verified/leaderboard"):
             return [
                 {"rank": 1, "model_id": "model/a", "value": 66.1, "verified": True},
                 {"rank": 2, "model_id": "model/b", "value": 64.0, "verified": True},
@@ -42,13 +42,13 @@ class FallbackLeaderboardAgent(BenchmarkAgent):
         return ["empty/benchmark", "cais/hle"]
 
     async def _get_json(self, url: str, params=None):
-        if url.endswith("/api/datasets/empty%2Fbenchmark"):
+        if url.endswith("/api/datasets/empty/benchmark"):
             return {"id": "empty/benchmark", "description": "Empty leaderboard benchmark."}
-        if url.endswith("/api/datasets/cais%2Fhle"):
+        if url.endswith("/api/datasets/cais/hle"):
             return {"id": "cais/hle", "description": "Reasoning benchmark with scores."}
-        if url.endswith("/api/datasets/empty%2Fbenchmark/leaderboard"):
+        if url.endswith("/api/datasets/empty/benchmark/leaderboard"):
             return []
-        if url.endswith("/api/datasets/cais%2Fhle/leaderboard"):
+        if url.endswith("/api/datasets/cais/hle/leaderboard"):
             return [
                 {"rank": 1, "model_id": "org/r1", "value": 42.0, "verified": True},
                 {"rank": 2, "model_id": "org/r2", "value": 39.5, "verified": False},
@@ -88,6 +88,17 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         )
         dataset_ids = agent._extract_dataset_ids_from_tool_result(fake_result)
         self.assertIn("SWE-bench/SWE-bench_Verified", dataset_ids)
+
+    def test_expanded_search_terms_include_hint_tokens(self):
+        agent = BenchmarkAgent()
+        terms = agent._expanded_search_terms("best coding model")
+        self.assertIn("swe", terms)
+        self.assertIn("programming", terms)
+
+    def test_dataset_api_url_keeps_namespace_slash(self):
+        agent = BenchmarkAgent()
+        url = agent._dataset_api_url("SWE-bench/SWE-bench_Verified")
+        self.assertTrue(url.endswith("/api/datasets/SWE-bench/SWE-bench_Verified"))
 
     async def test_run_tries_next_candidate_when_first_has_no_leaderboard(self):
         agent = FallbackLeaderboardAgent()

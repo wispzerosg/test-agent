@@ -10,13 +10,13 @@ Lightweight agent that:
 
 ```bash
 python3 -m pip install -e .
-hf-benchmark-agent "best coding model"
+python3 -m hf_benchmark_agent.cli "best coding model"
 ```
 
-Alternative module form:
+If your shell has `~/.local/bin` on `PATH`, the console script also works:
 
 ```bash
-python3 -m hf_benchmark_agent.cli "best coding model"
+hf-benchmark-agent "best coding model"
 ```
 
 Optional environment variables:

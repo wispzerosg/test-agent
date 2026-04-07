@@ -71,8 +71,9 @@ class BenchmarkAgent:
             raise ValueError("Request text must not be empty.")
 
         candidate_dataset_ids = await self._search_benchmarks_via_mcp(request)
-        if not candidate_dataset_ids:
-            candidate_dataset_ids = await self._fallback_benchmark_ids(request)
+        # Always augment MCP candidates with direct Hub API discovery.
+        api_candidates = await self._fallback_benchmark_ids(request)
+        candidate_dataset_ids.extend(ds for ds in api_candidates if ds not in candidate_dataset_ids)
         if not candidate_dataset_ids:
             raise RuntimeError("No benchmark datasets found.")
 
@@ -84,9 +85,7 @@ class BenchmarkAgent:
         relevance_score = 0.0
         top_models: list[ModelScore] = []
         for candidate_dataset_id, candidate_score in ranked:
-            leaderboard_url = (
-                f"https://huggingface.co/api/datasets/{quote(candidate_dataset_id, safe='')}/leaderboard"
-            )
+            leaderboard_url = self._dataset_leaderboard_api_url(candidate_dataset_id)
             leaderboard_payload = await self._safe_get_json(leaderboard_url)
             candidate_top_models = self._extract_top_models(leaderboard_payload, limit=5)
             if candidate_top_models:
@@ -241,15 +240,30 @@ class BenchmarkAgent:
 
     async def _fallback_benchmark_ids(self, request: str) -> list[str]:
         base_url = "https://huggingface.co/api/datasets"
-        searched = await self._get_json(
-            base_url, params={"filter": "benchmark:official", "search": request, "limit": 60}
-        )
-        ids = self._extract_dataset_ids_from_api_list(searched)
+
+        ids: list[str] = []
+        for term in self._expanded_search_terms(request):
+            searched = await self._safe_get_json(
+                base_url, params={"filter": "benchmark:official", "search": term, "limit": 60}
+            )
+            for dataset_id in self._extract_dataset_ids_from_api_list(searched):
+                if dataset_id not in ids:
+                    ids.append(dataset_id)
         if ids:
             return ids
 
         broad = await self._get_json(base_url, params={"filter": "benchmark:official", "limit": 60})
         return self._extract_dataset_ids_from_api_list(broad)
+
+    def _expanded_search_terms(self, request: str) -> list[str]:
+        request_tokens = self._tokenize(request)
+        terms: list[str] = [request]
+        for hint_tokens in REQUEST_HINTS.values():
+            if request_tokens & hint_tokens:
+                for token in sorted(hint_tokens):
+                    if token not in terms:
+                        terms.append(token)
+        return terms
 
     def _extract_dataset_ids_from_api_list(self, payload: Any) -> list[str]:
         if not isinstance(payload, list):
@@ -274,9 +288,7 @@ class BenchmarkAgent:
 
         # Limit remote metadata fetches while keeping a decent candidate set.
         for dataset_id in unique_dataset_ids[:25]:
-            metadata = await self._safe_get_json(
-                f"https://huggingface.co/api/datasets/{quote(dataset_id, safe='')}"
-            )
+            metadata = await self._safe_get_json(self._dataset_api_url(dataset_id))
             benchmark_text = self._build_benchmark_text(dataset_id, metadata)
             benchmark_tokens = self._tokenize(benchmark_text)
 
@@ -316,6 +328,8 @@ class BenchmarkAgent:
             benchmark_hit = benchmark_tokens & hint_tokens
             if request_hit and benchmark_hit:
                 score += 1.25 + (0.15 * len(request_hit & benchmark_hit))
+            elif request_hit and not benchmark_hit:
+                score -= 0.75
         return score
 
     def _extract_top_models(self, payload: Any, limit: int) -> list[ModelScore]:
@@ -398,6 +412,15 @@ class BenchmarkAgent:
             response = await client.get(url, params=params)
             response.raise_for_status()
             return response.json()
+
+    def _dataset_api_url(self, dataset_id: str) -> str:
+        # Hugging Face dataset API expects namespace/repo with an unescaped slash.
+        normalized = quote(dataset_id, safe="/._-")
+        return f"https://huggingface.co/api/datasets/{normalized}"
+
+    def _dataset_leaderboard_api_url(self, dataset_id: str) -> str:
+        normalized = quote(dataset_id, safe="/._-")
+        return f"https://huggingface.co/api/datasets/{normalized}/leaderboard"
 
 
 def run_agent_sync(
