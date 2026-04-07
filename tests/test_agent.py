@@ -174,9 +174,12 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
 
         stdout = io.StringIO()
         with patch("hf_benchmark_agent.cli.run_agent_sync", return_value=fake_result):
-            with patch("sys.argv", ["hf-benchmark-agent", "best coding model"]):
-                with redirect_stdout(stdout):
-                    exit_code = main()
+            with patch("hf_benchmark_agent.cli.TelegramOutputRelay") as relay_cls:
+                relay_cls.return_value.send_output_copy.return_value = 1
+                with patch("sys.argv", ["hf-benchmark-agent", "best coding model"]):
+                    with redirect_stdout(stdout):
+                        exit_code = main()
+                relay_cls.return_value.send_output_copy.assert_called_once()
 
         output = stdout.getvalue()
         self.assertEqual(exit_code, 0)

@@ -5,6 +5,7 @@ import json
 import sys
 
 from .agent import BenchmarkAgentResult, ModelScore, run_agent_sync
+from .telegram_bot import TelegramOutputRelay
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +82,22 @@ def main() -> int:
         return 1
 
     _print_result(result)
+    relay = TelegramOutputRelay()
+    try:
+        relay.send_output_copy(result)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "telegram_warning": (
+                        f"Output not copied to Telegram: {exc}. "
+                        "Send any message to the bot first so chat_id can be discovered."
+                    )
+                },
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
     return 0
 
 
