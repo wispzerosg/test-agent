@@ -3,91 +3,60 @@ import unittest
 from hf_benchmark_agent.agent import BenchmarkAgent
 
 
-class _FakeText:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-
-class _FakeToolResult:
-    def __init__(self, content) -> None:
-        self.content = content
-
-
 class FakeBenchmarkAgent(BenchmarkAgent):
-    async def _search_benchmarks_via_mcp(self, request: str) -> list[str]:
-        return ["SWE-bench/SWE-bench_Verified", "cais/hle"]
-
-    async def _get_json(self, url: str, params=None):
-        if url.endswith("/api/datasets/SWE-bench/SWE-bench_Verified"):
-            return {
-                "id": "SWE-bench/SWE-bench_Verified",
-                "description": "Software engineering coding benchmark for LLMs.",
-            }
-        if url.endswith("/api/datasets/cais/hle"):
-            return {"id": "cais/hle", "description": "Reasoning benchmark."}
-        if url.endswith("/api/datasets/SWE-bench/SWE-bench_Verified/leaderboard"):
-            return [
-                {"rank": 1, "model_id": "model/a", "value": 66.1, "verified": True},
-                {"rank": 2, "model_id": "model/b", "value": 64.0, "verified": True},
-                {"rank": 3, "model_id": "model/c", "value": 63.5, "verified": False},
-                {"rank": 4, "model_id": "model/d", "value": 62.9, "verified": True},
-                {"rank": 5, "model_id": "model/e", "value": 62.0, "verified": None},
-                {"rank": 6, "model_id": "model/f", "value": 61.0, "verified": True},
-            ]
-        return {}
+    async def _safe_get_text(self, url: str) -> str:
+        if url.endswith("/leaderboard/code"):
+            return """
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"model/a\\",\\"rating\\":66.1},{\\"rank\\":2,\\"modelDisplayName\\":\\"model/b\\",\\"rating\\":64.0},{\\"rank\\":3,\\"modelDisplayName\\":\\"model/c\\",\\"rating\\":63.5},{\\"rank\\":4,\\"modelDisplayName\\":\\"model/d\\",\\"rating\\":62.9},{\\"rank\\":5,\\"modelDisplayName\\":\\"model/e\\",\\"rating\\":62.0},{\\"rank\\":6,\\"modelDisplayName\\":\\"model/f\\",\\"rating\\":61.0}]}"])</script>
+"""
+        if url.endswith("/leaderboard/text"):
+            return """
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"text\\",\\"leaderboardSlug\\":\\"overall\\",\\"params\\":{\\"category\\":\\"overall\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"text-model\\",\\"rating\\":80.0}]}"])</script>
+"""
+        return ""
 
 
 class FallbackLeaderboardAgent(BenchmarkAgent):
-    async def _search_benchmarks_via_mcp(self, request: str) -> list[str]:
-        return ["empty/benchmark", "cais/hle"]
-
-    async def _get_json(self, url: str, params=None):
-        if url.endswith("/api/datasets/empty/benchmark"):
-            return {"id": "empty/benchmark", "description": "Empty leaderboard benchmark."}
-        if url.endswith("/api/datasets/cais/hle"):
-            return {"id": "cais/hle", "description": "Reasoning benchmark with scores."}
-        if url.endswith("/api/datasets/empty/benchmark/leaderboard"):
-            return []
-        if url.endswith("/api/datasets/cais/hle/leaderboard"):
-            return [
-                {"rank": 1, "model_id": "org/r1", "value": 42.0, "verified": True},
-                {"rank": 2, "model_id": "org/r2", "value": 39.5, "verified": False},
-            ]
-        return {}
+    async def _safe_get_text(self, url: str) -> str:
+        if url.endswith("/leaderboard/code"):
+            return """
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[]}"])</script>
+"""
+        if url.endswith("/leaderboard/text"):
+            return """
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"text\\",\\"leaderboardSlug\\":\\"overall\\",\\"params\\":{\\"category\\":\\"overall\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"org/r1\\",\\"rating\\":42.0},{\\"rank\\":2,\\"modelDisplayName\\":\\"org/r2\\",\\"rating\\":39.5}]}"])</script>
+"""
+        return ""
 
 
 class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
     async def test_run_selects_relevant_benchmark_and_returns_top_five(self):
-        agent = FakeBenchmarkAgent(mcp_url="https://huggingface.co/mcp", hf_token="dummy")
+        agent = FakeBenchmarkAgent(arena_base_url="https://arena.ai")
         result = await agent.run("best coding model for software engineering")
 
-        self.assertEqual(result.selected_benchmark.dataset_id, "SWE-bench/SWE-bench_Verified")
+        self.assertEqual(result.selected_benchmark.dataset_id, "arena/code:webdev")
         self.assertEqual(len(result.top_models), 5)
         self.assertEqual(result.top_models[0].model_id, "model/a")
         self.assertEqual(result.top_models[0].score, 66.1)
 
-    def test_extract_top_models_supports_alternate_keys(self):
+    def test_extract_top_models_supports_arena_fields(self):
         agent = BenchmarkAgent()
-        payload = {
-            "entries": [
-                {"rank": "1", "modelId": "org/m1", "score": "91.2", "verified": True},
-                {"rank": "2", "modelId": "org/m2", "score": "90.0", "verified": False},
-            ]
-        }
-        models = agent._extract_top_models(payload, limit=5)
+        entries = [
+            {"rank": "1", "modelDisplayName": "org/m1", "rating": "91.2"},
+            {"rank": "2", "modelDisplayName": "org/m2", "rating": "90.0"},
+        ]
+        models = agent._extract_top_models_from_entries(entries, limit=5)
         self.assertEqual([m.model_id for m in models], ["org/m1", "org/m2"])
         self.assertAlmostEqual(models[0].score or 0.0, 91.2)
 
-    def test_extract_dataset_ids_from_text_content(self):
+    def test_extract_arena_leaderboards_from_html(self):
         agent = BenchmarkAgent()
-        fake_result = _FakeToolResult(
-            content=[
-                _FakeText("Try https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified"),
-                _FakeText("and cais/hle"),
-            ]
-        )
-        dataset_ids = agent._extract_dataset_ids_from_tool_result(fake_result)
-        self.assertIn("SWE-bench/SWE-bench_Verified", dataset_ids)
+        html = """
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"a\\",\\"rating\\":1.0}]}"])</script>
+"""
+        payloads = agent._extract_arena_leaderboards_from_html(html)
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["arenaSlug"], "code")
 
     def test_expanded_search_terms_include_hint_tokens(self):
         agent = BenchmarkAgent()
@@ -95,15 +64,15 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         self.assertIn("swe", terms)
         self.assertIn("programming", terms)
 
-    def test_dataset_api_url_keeps_namespace_slash(self):
+    def test_leaderboard_page_url(self):
         agent = BenchmarkAgent()
-        url = agent._dataset_api_url("SWE-bench/SWE-bench_Verified")
-        self.assertTrue(url.endswith("/api/datasets/SWE-bench/SWE-bench_Verified"))
+        url = agent._leaderboard_page_url("code")
+        self.assertEqual(url, "https://arena.ai/leaderboard/code")
 
-    async def test_run_tries_next_candidate_when_first_has_no_leaderboard(self):
+    async def test_run_tries_next_candidate_when_first_has_no_entries(self):
         agent = FallbackLeaderboardAgent()
         result = await agent.run("math reasoning benchmark")
-        self.assertEqual(result.selected_benchmark.dataset_id, "cais/hle")
+        self.assertEqual(result.selected_benchmark.dataset_id, "arena/text:overall")
         self.assertEqual(result.top_models[0].model_id, "org/r1")
 
 

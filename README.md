@@ -1,10 +1,10 @@
-# HF Benchmark MCP Agent
+# Arena Benchmark Agent
 
 Lightweight agent that:
 1. receives a plain-text request (for example: "best coding model"),
-2. uses the Hugging Face MCP server to discover official benchmark datasets,
-3. picks the most relevant benchmark,
-4. returns the top-5 models with leaderboard scores.
+2. maps the request to the most relevant leaderboard on https://arena.ai/,
+3. extracts leaderboard entries from Arena pages,
+4. returns the top-5 models with scores.
 
 ## Quick start
 
@@ -21,13 +21,12 @@ hf-benchmark-agent "best coding model"
 
 Optional environment variables:
 
-- `HF_MCP_URL` (default: `https://huggingface.co/mcp`)
-- `HF_TOKEN` (recommended for authenticated access)
+- `ARENA_BASE_URL` (default: `https://arena.ai`)
 
-Example with token:
+Example with custom base URL:
 
 ```bash
-HF_TOKEN=hf_xxx python3 -m hf_benchmark_agent.cli "reasoning benchmark"
+ARENA_BASE_URL=https://arena.ai python3 -m hf_benchmark_agent.cli "reasoning model"
 ```
 
 ## Output format
@@ -35,15 +34,15 @@ HF_TOKEN=hf_xxx python3 -m hf_benchmark_agent.cli "reasoning benchmark"
 The CLI prints JSON with:
 
 - `request`: original text query
-- `selected_benchmark`: benchmark dataset chosen as most relevant
+- `selected_benchmark`: Arena leaderboard chosen as most relevant
 - `top_models`: top 5 model entries (`rank`, `model_id`, `score`, `verified`)
 
 ## How relevance is computed
 
-The agent scores candidate benchmark datasets using:
+The agent scores candidate Arena leaderboard candidates using:
 
-- token overlap between request and benchmark metadata,
-- overlap with benchmark-specific keyword hints,
-- weak sequence similarity against dataset ID/title.
+- token overlap between request and arena/category/leaderboard identifiers,
+- overlap with Arena-specific keyword hints,
+- weak sequence similarity against leaderboard context.
 
 Highest relevance score wins.

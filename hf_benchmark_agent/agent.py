@@ -7,23 +7,40 @@ import re
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
 
-DATASET_ID_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
-DATASET_URL_RE = re.compile(
-    r"https?://huggingface\.co/datasets/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)"
+NEXT_FLIGHT_CHUNK_RE = re.compile(
+    r'self\.__next_f\.push\(\[1,"(.*?)"\]\)</script>',
+    flags=re.S,
 )
 
-REQUEST_HINTS: dict[str, set[str]] = {
-    "coding": {"code", "coding", "programming", "software", "swe", "bug", "debug"},
-    "math": {"math", "mathematics", "reasoning", "aime", "gsm", "algebra", "proof"},
-    "chat": {"chat", "assistant", "instruction", "instruct", "dialog", "conversation"},
-    "multilingual": {"multilingual", "translation", "language", "cross-lingual"},
+ARENA_PAGE_SLUGS = [
+    "overview",
+    "text",
+    "code",
+    "vision",
+    "document",
+    "search",
+    "text-to-image",
+    "image-edit",
+    "text-to-video",
+    "image-to-video",
+    "video-edit",
+]
+
+ARENA_HINTS: dict[str, set[str]] = {
+    "code": {"code", "coding", "programming", "software", "swe", "webdev", "react", "html"},
+    "text": {"chat", "assistant", "reasoning", "math", "multilingual", "translation"},
     "vision": {"vision", "image", "vqa", "ocr", "caption", "multimodal"},
-    "safety": {"safety", "toxic", "harm", "jailbreak", "alignment", "robustness"},
+    "document": {"document", "pdf", "file", "paper", "doc"},
+    "search": {"search", "browse", "web", "retrieval"},
+    "text-to-image": {"text-to-image", "t2i", "image generation"},
+    "image-edit": {"image edit", "inpainting", "edit image"},
+    "text-to-video": {"text-to-video", "video generation", "t2v"},
+    "image-to-video": {"image-to-video", "i2v"},
+    "video-edit": {"video edit", "video-edit"},
 }
 
 
@@ -52,17 +69,24 @@ class BenchmarkAgentResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ArenaLeaderboardCandidate:
+    page_slug: str
+    arena_slug: str
+    leaderboard_slug: str
+    entries: list[dict[str, Any]]
+    relevance_score: float
+
+
 class BenchmarkAgent:
-    """Find benchmark most relevant to a user request and return top models."""
+    """Find the most relevant Arena leaderboard and return top models."""
 
     def __init__(
         self,
-        mcp_url: str | None = None,
-        hf_token: str | None = None,
+        arena_base_url: str | None = None,
         timeout_seconds: float = 20.0,
     ) -> None:
-        self.mcp_url = (mcp_url or os.getenv("HF_MCP_URL") or "https://huggingface.co/mcp").strip()
-        self.hf_token = hf_token or os.getenv("HF_TOKEN")
+        self.arena_base_url = (arena_base_url or os.getenv("ARENA_BASE_URL") or "https://arena.ai").strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     async def run(self, request: str) -> BenchmarkAgentResult:
@@ -70,302 +94,121 @@ class BenchmarkAgent:
         if not request:
             raise ValueError("Request text must not be empty.")
 
-        candidate_dataset_ids = await self._search_benchmarks_via_mcp(request)
-        # Always augment MCP candidates with direct Hub API discovery.
-        api_candidates = await self._fallback_benchmark_ids(request)
-        candidate_dataset_ids.extend(ds for ds in api_candidates if ds not in candidate_dataset_ids)
-        if not candidate_dataset_ids:
-            raise RuntimeError("No benchmark datasets found.")
-
-        ranked = await self._rank_candidates(request, candidate_dataset_ids)
+        ranked = await self._rank_candidates(request)
         if not ranked:
-            raise RuntimeError("Could not rank any benchmark candidates.")
+            raise RuntimeError("No Arena leaderboard candidates found for this request.")
 
-        selected_dataset_id: str | None = None
-        relevance_score = 0.0
+        selected: ArenaLeaderboardCandidate | None = None
         top_models: list[ModelScore] = []
-        for candidate_dataset_id, candidate_score in ranked:
-            leaderboard_url = self._dataset_leaderboard_api_url(candidate_dataset_id)
-            leaderboard_payload = await self._safe_get_json(leaderboard_url)
-            candidate_top_models = self._extract_top_models(leaderboard_payload, limit=5)
-            if candidate_top_models:
-                selected_dataset_id = candidate_dataset_id
-                relevance_score = candidate_score
-                top_models = candidate_top_models
+        for candidate in ranked:
+            candidate_top = self._extract_top_models_from_entries(candidate.entries, limit=5)
+            if candidate_top:
+                selected = candidate
+                top_models = candidate_top
                 break
-
-        if selected_dataset_id is None:
-            raise RuntimeError("No candidate benchmark returned leaderboard scores.")
+        if selected is None:
+            raise RuntimeError("No Arena leaderboard candidate returned model scores.")
 
         return BenchmarkAgentResult(
             request=request,
             selected_benchmark=SelectedBenchmark(
-                dataset_id=selected_dataset_id,
-                url=f"https://huggingface.co/datasets/{selected_dataset_id}",
-                relevance_score=relevance_score,
+                dataset_id=f"arena/{selected.arena_slug}:{selected.leaderboard_slug}",
+                url=self._leaderboard_page_url(selected.page_slug),
+                relevance_score=selected.relevance_score,
             ),
             top_models=top_models,
         )
 
-    async def _search_benchmarks_via_mcp(self, request: str) -> list[str]:
-        search_args = {
-            "query": request,
-            "repo_types": ["dataset"],
-            "filters": ["benchmark:official"],
-            "limit": 40,
-        }
-        fallback_args = {
-            "query": "",
-            "repo_types": ["dataset"],
-            "filters": ["benchmark:official"],
-            "sort": "trendingScore",
-            "limit": 40,
-        }
-
-        for tool_name in ("hub_repo_search", "Huggingface-skills-hub_repo_search"):
-            try:
-                primary = await self._call_mcp_tool(tool_name, search_args)
-                dataset_ids = self._extract_dataset_ids_from_tool_result(primary)
-                if len(dataset_ids) < 5:
-                    broad = await self._call_mcp_tool(tool_name, fallback_args)
-                    dataset_ids.extend(
-                        ds for ds in self._extract_dataset_ids_from_tool_result(broad) if ds not in dataset_ids
-                    )
-                if dataset_ids:
-                    return dataset_ids
-            except Exception:
-                continue
-
-        return []
-
-    async def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        try:
-            from mcp.client.session import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
-        except ImportError:
-            from mcp.client.session import ClientSession
-            from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
-
-        headers: dict[str, str] | None = None
-        if self.hf_token:
-            headers = {"Authorization": f"Bearer {self.hf_token}"}
-
-        async with streamablehttp_client(url=self.mcp_url, headers=headers) as transport:
-            if len(transport) == 3:
-                read_stream, write_stream, _get_session_id = transport
-            else:
-                read_stream, write_stream = transport
-
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                return await session.call_tool(tool_name, arguments)
-
-    def _extract_dataset_ids_from_tool_result(self, tool_result: Any) -> list[str]:
-        values: list[str] = []
-
-        structured = getattr(tool_result, "structuredContent", None)
-        if structured is None:
-            structured = getattr(tool_result, "structured_content", None)
-
-        if structured is not None:
-            self._collect_dataset_ids(structured, values)
-
-        content = getattr(tool_result, "content", None)
-        if isinstance(content, list):
-            for item in content:
-                text = getattr(item, "text", None)
-                if isinstance(text, str):
-                    self._collect_dataset_ids(text, values)
-                else:
-                    self._collect_dataset_ids(item, values)
-
-        self._collect_dataset_ids(tool_result, values)
-
-        unique: list[str] = []
-        for dataset_id in values:
-            if dataset_id not in unique:
-                unique.append(dataset_id)
-        return unique
-
-    def _collect_dataset_ids(self, value: Any, out: list[str]) -> None:
-        if value is None:
-            return
-
-        if isinstance(value, str):
-            for match in DATASET_URL_RE.finditer(value):
-                out.append(match.group(1))
-
-            if DATASET_ID_RE.match(value):
-                out.append(value)
-
-            # Parse JSON strings when a tool returns compact JSON in text blocks.
-            if value.lstrip().startswith("{") or value.lstrip().startswith("["):
-                try:
-                    parsed = json.loads(value)
-                except json.JSONDecodeError:
-                    parsed = None
-                if parsed is not None:
-                    self._collect_dataset_ids(parsed, out)
-            return
-
-        if isinstance(value, list):
-            for item in value:
-                self._collect_dataset_ids(item, out)
-            return
-
-        if isinstance(value, dict):
-            for key, item in value.items():
-                lower_key = key.lower()
-                if lower_key in {"id", "dataset_id", "datasetid", "repo_id", "repoid"}:
-                    if isinstance(item, str) and DATASET_ID_RE.match(item):
-                        out.append(item)
-                self._collect_dataset_ids(item, out)
-            return
-
-        for attr in ("id", "dataset_id", "repo_id"):
-            if hasattr(value, attr):
-                item = getattr(value, attr)
-                if isinstance(item, str) and DATASET_ID_RE.match(item):
-                    out.append(item)
-
-        # Some MCP SDK objects expose dict-like payload through model_dump.
-        model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            try:
-                dumped = model_dump()
-            except Exception:
-                dumped = None
-            if dumped is not None:
-                self._collect_dataset_ids(dumped, out)
-
-    async def _fallback_benchmark_ids(self, request: str) -> list[str]:
-        base_url = "https://huggingface.co/api/datasets"
-
-        ids: list[str] = []
-        for term in self._expanded_search_terms(request):
-            searched = await self._safe_get_json(
-                base_url, params={"filter": "benchmark:official", "search": term, "limit": 60}
-            )
-            for dataset_id in self._extract_dataset_ids_from_api_list(searched):
-                if dataset_id not in ids:
-                    ids.append(dataset_id)
-        if ids:
-            return ids
-
-        broad = await self._get_json(base_url, params={"filter": "benchmark:official", "limit": 60})
-        return self._extract_dataset_ids_from_api_list(broad)
-
     def _expanded_search_terms(self, request: str) -> list[str]:
         request_tokens = self._tokenize(request)
         terms: list[str] = [request]
-        for hint_tokens in REQUEST_HINTS.values():
+        for hint_tokens in ARENA_HINTS.values():
             if request_tokens & hint_tokens:
                 for token in sorted(hint_tokens):
                     if token not in terms:
                         terms.append(token)
         return terms
 
-    def _extract_dataset_ids_from_api_list(self, payload: Any) -> list[str]:
-        if not isinstance(payload, list):
-            return []
-        ids: list[str] = []
-        for item in payload:
-            if isinstance(item, dict):
-                dataset_id = item.get("id")
-                if isinstance(dataset_id, str) and DATASET_ID_RE.match(dataset_id):
-                    ids.append(dataset_id)
-        return ids
-
-    async def _rank_candidates(
-        self, request: str, dataset_ids: list[str]
-    ) -> list[tuple[str, float]]:
+    async def _rank_candidates(self, request: str) -> list[ArenaLeaderboardCandidate]:
         request_tokens = self._tokenize(request)
-        ranked: list[tuple[str, float]] = []
-        unique_dataset_ids = []
-        for dataset_id in dataset_ids:
-            if dataset_id not in unique_dataset_ids:
-                unique_dataset_ids.append(dataset_id)
+        ranked: list[ArenaLeaderboardCandidate] = []
+        seen: set[tuple[str, str, str]] = set()
 
-        # Limit remote metadata fetches while keeping a decent candidate set.
-        for dataset_id in unique_dataset_ids[:25]:
-            metadata = await self._safe_get_json(self._dataset_api_url(dataset_id))
-            benchmark_text = self._build_benchmark_text(dataset_id, metadata)
-            benchmark_tokens = self._tokenize(benchmark_text)
+        for page_slug in self._prioritized_pages(request_tokens):
+            html = await self._safe_get_text(self._leaderboard_page_url(page_slug))
+            if not html:
+                continue
 
-            overlap = len(request_tokens & benchmark_tokens)
-            hint_score = self._hint_alignment_score(request_tokens, benchmark_tokens)
-            ratio = SequenceMatcher(None, request.lower(), benchmark_text.lower()).ratio()
-            relevance = overlap * 2.0 + hint_score + ratio
-            ranked.append((dataset_id, relevance))
+            for payload in self._extract_arena_leaderboards_from_html(html):
+                arena_slug = str(payload.get("arenaSlug", "")).strip()
+                leaderboard_slug = str(payload.get("leaderboardSlug", "")).strip()
+                params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+                category = str(params.get("category", "")).strip()
+                entries = payload.get("entries")
+                if not arena_slug or not leaderboard_slug or not isinstance(entries, list):
+                    continue
 
-        ranked.sort(key=lambda item: item[1], reverse=True)
+                dedupe_key = (page_slug, arena_slug, leaderboard_slug)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+
+                context = " ".join(
+                    part for part in [page_slug, arena_slug, leaderboard_slug, category] if part
+                )
+                context_tokens = self._tokenize(context)
+                overlap = len(request_tokens & context_tokens)
+                hint_score = self._hint_alignment_score(request_tokens, context_tokens)
+                ratio = SequenceMatcher(None, request.lower(), context.lower()).ratio()
+                relevance = overlap * 2.0 + hint_score + ratio
+                ranked.append(
+                    ArenaLeaderboardCandidate(
+                        page_slug=page_slug,
+                        arena_slug=arena_slug,
+                        leaderboard_slug=leaderboard_slug,
+                        entries=entries,
+                        relevance_score=relevance,
+                    )
+                )
+
+        ranked.sort(key=lambda item: item.relevance_score, reverse=True)
         return ranked
 
-    def _build_benchmark_text(self, dataset_id: str, metadata: Any) -> str:
-        parts = [dataset_id]
-        if isinstance(metadata, dict):
-            for key in ("id", "description", "pretty_name", "cardData"):
-                value = metadata.get(key)
-                if isinstance(value, str):
-                    parts.append(value)
-                elif isinstance(value, dict):
-                    for nested_key in ("pretty_name", "description", "task_categories", "tags"):
-                        nested_val = value.get(nested_key)
-                        if isinstance(nested_val, str):
-                            parts.append(nested_val)
-                        elif isinstance(nested_val, list):
-                            parts.extend(str(item) for item in nested_val)
-                elif isinstance(value, list):
-                    parts.extend(str(item) for item in value)
-        return " ".join(parts)
-
     def _hint_alignment_score(
-        self, request_tokens: set[str], benchmark_tokens: set[str]
+        self, request_tokens: set[str], context_tokens: set[str]
     ) -> float:
         score = 0.0
-        for hint_tokens in REQUEST_HINTS.values():
+        for page_slug, hint_tokens in ARENA_HINTS.items():
             request_hit = request_tokens & hint_tokens
-            benchmark_hit = benchmark_tokens & hint_tokens
-            if request_hit and benchmark_hit:
-                score += 1.25 + (0.15 * len(request_hit & benchmark_hit))
-            elif request_hit and not benchmark_hit:
+            context_hit = context_tokens & (hint_tokens | self._tokenize(page_slug))
+            if request_hit and context_hit:
+                score += 1.4 + (0.2 * len(request_hit & context_hit))
+            elif request_hit and not context_hit:
                 score -= 0.75
         return score
 
-    def _extract_top_models(self, payload: Any, limit: int) -> list[ModelScore]:
-        entries: list[Any]
-        if isinstance(payload, list):
-            entries = payload
-        elif isinstance(payload, dict):
-            entries = (
-                payload.get("leaderboard")
-                or payload.get("entries")
-                or payload.get("results")
-                or payload.get("rows")
-                or []
-            )
-            if not isinstance(entries, list):
-                entries = []
-        else:
-            entries = []
-
+    def _extract_top_models_from_entries(self, entries: list[Any], limit: int) -> list[ModelScore]:
         models: list[ModelScore] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             model_id = (
-                entry.get("model_id")
+                entry.get("modelDisplayName")
+                or entry.get("model_name")
+                or entry.get("model_id")
                 or entry.get("modelId")
                 or entry.get("model")
-                or entry.get("model_name")
+                or entry.get("name")
             )
             if not isinstance(model_id, str):
                 continue
 
             rank = self._to_int(entry.get("rank"))
-            score = self._to_float(entry.get("value"))
+            score = self._to_float(entry.get("rating"))
             if score is None:
                 score = self._to_float(entry.get("score"))
+            if score is None:
+                score = self._to_float(entry.get("value"))
             verified = entry.get("verified") if isinstance(entry.get("verified"), bool) else None
             models.append(ModelScore(rank=rank, model_id=model_id, score=score, verified=verified))
 
@@ -397,33 +240,107 @@ class BenchmarkAgent:
     def _tokenize(self, text: str) -> set[str]:
         return set(re.findall(r"[a-z0-9]+", text.lower()))
 
-    async def _safe_get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
+    def _prioritized_pages(self, request_tokens: set[str]) -> list[str]:
+        scored: list[tuple[str, float]] = []
+        for slug in ARENA_PAGE_SLUGS:
+            slug_tokens = self._tokenize(slug)
+            hint_tokens = ARENA_HINTS.get(slug, set())
+            overlap = len(request_tokens & (slug_tokens | hint_tokens))
+            score = overlap + (0.25 * SequenceMatcher(None, " ".join(sorted(request_tokens)), slug).ratio())
+            scored.append((slug, score))
+
+        scored.sort(key=lambda item: item[1], reverse=True)
+        ordered = [slug for slug, _ in scored]
+        # Keep traversal bounded while still allowing fallback exploration.
+        return ordered[:4] + [slug for slug in ordered[4:] if slug not in ordered[:4]]
+
+    async def _safe_get_text(self, url: str) -> str:
         try:
-            return await self._get_json(url, params=params)
+            return await self._get_text(url)
         except Exception:
-            return {}
+            return ""
 
-    async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
-        headers = {"Accept": "application/json"}
-        if self.hf_token:
-            headers["Authorization"] = f"Bearer {self.hf_token}"
-
-        async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers) as client:
-            response = await client.get(url, params=params)
+    async def _get_text(self, url: str) -> str:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.get(url)
             response.raise_for_status()
-            return response.json()
+            return response.text
 
-    def _dataset_api_url(self, dataset_id: str) -> str:
-        # Hugging Face dataset API expects namespace/repo with an unescaped slash.
-        normalized = quote(dataset_id, safe="/._-")
-        return f"https://huggingface.co/api/datasets/{normalized}"
+    def _leaderboard_page_url(self, page_slug: str) -> str:
+        return f"{self.arena_base_url}/leaderboard/{page_slug}"
 
-    def _dataset_leaderboard_api_url(self, dataset_id: str) -> str:
-        normalized = quote(dataset_id, safe="/._-")
-        return f"https://huggingface.co/api/datasets/{normalized}/leaderboard"
+    def _extract_arena_leaderboards_from_html(self, html: str) -> list[dict[str, Any]]:
+        parts: list[str] = []
+        for raw in NEXT_FLIGHT_CHUNK_RE.findall(html):
+            try:
+                parts.append(raw.encode("utf-8").decode("unicode_escape"))
+            except UnicodeDecodeError:
+                parts.append(raw)
+
+        blob = "\n".join(parts)
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        index = 0
+        while True:
+            start = blob.find('{"arenaSlug"', index)
+            if start == -1:
+                break
+            object_text, end = self._extract_json_object(blob, start)
+            index = max(start + 1, end)
+            if not object_text:
+                continue
+
+            try:
+                parsed = json.loads(object_text)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(parsed, dict):
+                continue
+            if not isinstance(parsed.get("entries"), list):
+                continue
+            arena_slug = parsed.get("arenaSlug")
+            leaderboard_slug = parsed.get("leaderboardSlug")
+            params = parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
+            category = params.get("category")
+            if not isinstance(arena_slug, str) or not isinstance(leaderboard_slug, str):
+                continue
+            key = (arena_slug, leaderboard_slug, str(category or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(parsed)
+
+        return out
+
+    def _extract_json_object(self, text: str, start: int) -> tuple[str, int]:
+        if start < 0 or start >= len(text) or text[start] != "{":
+            return "", start
+
+        in_string = False
+        escaped = False
+        depth = 0
+        for idx in range(start, len(text)):
+            char = text[idx]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1], idx + 1
+        return "", start + 1
 
 
-def run_agent_sync(
-    request: str, mcp_url: str | None = None, hf_token: str | None = None
-) -> BenchmarkAgentResult:
-    return asyncio.run(BenchmarkAgent(mcp_url=mcp_url, hf_token=hf_token).run(request))
+def run_agent_sync(request: str, arena_base_url: str | None = None) -> BenchmarkAgentResult:
+    return asyncio.run(BenchmarkAgent(arena_base_url=arena_base_url).run(request))
