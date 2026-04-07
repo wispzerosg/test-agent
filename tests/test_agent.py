@@ -1,6 +1,10 @@
+import io
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
-from hf_benchmark_agent.agent import BenchmarkAgent
+from hf_benchmark_agent.agent import BenchmarkAgent, BenchmarkAgentResult, ModelScore, SelectedBenchmark
+from hf_benchmark_agent.cli import _build_score_plot, main
 
 
 class FakeBenchmarkAgent(BenchmarkAgent):
@@ -56,13 +60,20 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
 """
         payloads = agent._extract_arena_leaderboards_from_html(html)
         self.assertEqual(len(payloads), 1)
-        self.assertEqual(payloads[0]["arenaSlug"], "code")
+        self.assertEqual(payloads[0].arena_slug, "code")
 
-    def test_expanded_search_terms_include_hint_tokens(self):
+    def test_extract_arena_leaderboards_drops_unused_fields(self):
         agent = BenchmarkAgent()
-        terms = agent._expanded_search_terms("best coding model")
-        self.assertIn("swe", terms)
-        self.assertIn("programming", terms)
+        html = """
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"a\\",\\"rating\\":1.0,\\"unused\\":\\"x\\"}],\\"unusedRoot\\":\\"root\\"}"])</script>
+"""
+        payloads = agent._extract_arena_leaderboards_from_html(html)
+        self.assertEqual(len(payloads), 1)
+        payload = payloads[0]
+        self.assertEqual(payload.arena_slug, "code")
+        self.assertEqual(payload.leaderboard_slug, "webdev")
+        self.assertEqual(payload.category, "webdev")
+        self.assertEqual(len(payload.entries), 1)
 
     def test_leaderboard_page_url(self):
         agent = BenchmarkAgent()
@@ -74,6 +85,43 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         result = await agent.run("math reasoning benchmark")
         self.assertEqual(result.selected_benchmark.dataset_id, "arena/text:overall")
         self.assertEqual(result.top_models[0].model_id, "org/r1")
+
+    def test_score_plot_renders(self):
+        plot = _build_score_plot(
+            [
+                ModelScore(rank=1, model_id="a", score=100.0, verified=None),
+                ModelScore(rank=2, model_id="b", score=50.0, verified=None),
+            ]
+        )
+        self.assertIn("Top-5 score plot", plot)
+        self.assertIn("a", plot)
+        self.assertIn("b", plot)
+        self.assertIn("█", plot)
+
+    def test_cli_prints_json_and_plot(self):
+        fake_result = BenchmarkAgentResult(
+            request="best coding model",
+            selected_benchmark=SelectedBenchmark(
+                dataset_id="arena/code:webdev",
+                url="https://arena.ai/leaderboard/code",
+                relevance_score=1.2,
+            ),
+            top_models=[
+                ModelScore(rank=1, model_id="model/a", score=100.0, verified=None),
+                ModelScore(rank=2, model_id="model/b", score=80.0, verified=None),
+            ],
+        )
+
+        stdout = io.StringIO()
+        with patch("hf_benchmark_agent.cli.run_agent_sync", return_value=fake_result):
+            with patch("sys.argv", ["hf-benchmark-agent", "best coding model"]):
+                with redirect_stdout(stdout):
+                    exit_code = main()
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"dataset_id": "arena/code:webdev"', output)
+        self.assertIn("Top-5 score plot", output)
 
 
 if __name__ == "__main__":

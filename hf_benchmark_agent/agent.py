@@ -74,7 +74,7 @@ class ArenaLeaderboardCandidate:
     page_slug: str
     arena_slug: str
     leaderboard_slug: str
-    entries: list[dict[str, Any]]
+    top_models: list[ModelScore]
     relevance_score: float
 
 
@@ -101,10 +101,9 @@ class BenchmarkAgent:
         selected: ArenaLeaderboardCandidate | None = None
         top_models: list[ModelScore] = []
         for candidate in ranked:
-            candidate_top = self._extract_top_models_from_entries(candidate.entries, limit=5)
-            if candidate_top:
+            if candidate.top_models:
                 selected = candidate
-                top_models = candidate_top
+                top_models = candidate.top_models
                 break
         if selected is None:
             raise RuntimeError("No Arena leaderboard candidate returned model scores.")
@@ -119,16 +118,6 @@ class BenchmarkAgent:
             top_models=top_models,
         )
 
-    def _expanded_search_terms(self, request: str) -> list[str]:
-        request_tokens = self._tokenize(request)
-        terms: list[str] = [request]
-        for hint_tokens in ARENA_HINTS.values():
-            if request_tokens & hint_tokens:
-                for token in sorted(hint_tokens):
-                    if token not in terms:
-                        terms.append(token)
-        return terms
-
     async def _rank_candidates(self, request: str) -> list[ArenaLeaderboardCandidate]:
         request_tokens = self._tokenize(request)
         ranked: list[ArenaLeaderboardCandidate] = []
@@ -140,21 +129,18 @@ class BenchmarkAgent:
                 continue
 
             for payload in self._extract_arena_leaderboards_from_html(html):
-                arena_slug = str(payload.get("arenaSlug", "")).strip()
-                leaderboard_slug = str(payload.get("leaderboardSlug", "")).strip()
-                params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
-                category = str(params.get("category", "")).strip()
-                entries = payload.get("entries")
-                if not arena_slug or not leaderboard_slug or not isinstance(entries, list):
+                if not payload.arena_slug or not payload.leaderboard_slug:
                     continue
 
-                dedupe_key = (page_slug, arena_slug, leaderboard_slug)
+                dedupe_key = (page_slug, payload.arena_slug, payload.leaderboard_slug)
                 if dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
 
                 context = " ".join(
-                    part for part in [page_slug, arena_slug, leaderboard_slug, category] if part
+                    part
+                    for part in [page_slug, payload.arena_slug, payload.leaderboard_slug, payload.category]
+                    if part
                 )
                 context_tokens = self._tokenize(context)
                 overlap = len(request_tokens & context_tokens)
@@ -164,9 +150,9 @@ class BenchmarkAgent:
                 ranked.append(
                     ArenaLeaderboardCandidate(
                         page_slug=page_slug,
-                        arena_slug=arena_slug,
-                        leaderboard_slug=leaderboard_slug,
-                        entries=entries,
+                        arena_slug=payload.arena_slug,
+                        leaderboard_slug=payload.leaderboard_slug,
+                        top_models=self._extract_top_models_from_entries(payload.entries, limit=5),
                         relevance_score=relevance,
                     )
                 )
@@ -269,7 +255,7 @@ class BenchmarkAgent:
     def _leaderboard_page_url(self, page_slug: str) -> str:
         return f"{self.arena_base_url}/leaderboard/{page_slug}"
 
-    def _extract_arena_leaderboards_from_html(self, html: str) -> list[dict[str, Any]]:
+    def _extract_arena_leaderboards_from_html(self, html: str) -> list[ArenaLeaderboardPayload]:
         parts: list[str] = []
         for raw in NEXT_FLIGHT_CHUNK_RE.findall(html):
             try:
@@ -278,7 +264,7 @@ class BenchmarkAgent:
                 parts.append(raw)
 
         blob = "\n".join(parts)
-        out: list[dict[str, Any]] = []
+        out: list[ArenaLeaderboardPayload] = []
         seen: set[tuple[str, str, str]] = set()
         index = 0
         while True:
@@ -297,7 +283,8 @@ class BenchmarkAgent:
 
             if not isinstance(parsed, dict):
                 continue
-            if not isinstance(parsed.get("entries"), list):
+            entries = parsed.get("entries")
+            if not isinstance(entries, list):
                 continue
             arena_slug = parsed.get("arenaSlug")
             leaderboard_slug = parsed.get("leaderboardSlug")
@@ -309,7 +296,14 @@ class BenchmarkAgent:
             if key in seen:
                 continue
             seen.add(key)
-            out.append(parsed)
+            out.append(
+                ArenaLeaderboardPayload(
+                    arena_slug=arena_slug,
+                    leaderboard_slug=leaderboard_slug,
+                    category=str(category or ""),
+                    entries=entries,
+                )
+            )
 
         return out
 
@@ -344,3 +338,11 @@ class BenchmarkAgent:
 
 def run_agent_sync(request: str, arena_base_url: str | None = None) -> BenchmarkAgentResult:
     return asyncio.run(BenchmarkAgent(arena_base_url=arena_base_url).run(request))
+
+
+@dataclass(frozen=True)
+class ArenaLeaderboardPayload:
+    arena_slug: str
+    leaderboard_slug: str
+    category: str
+    entries: list[dict[str, Any]]
