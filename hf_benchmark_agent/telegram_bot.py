@@ -13,6 +13,8 @@ import requests
 from .agent import BenchmarkAgent, BenchmarkAgentResult
 from .cli import _build_cost_table
 
+TELEGRAM_BOT_TOKEN = "406067963:AAHs9OUwjbxSelsrZBhi_WYBp9ulS3ez1Xc"
+
 
 def _build_result_message(result: BenchmarkAgentResult) -> str:
     payload = json.dumps(result.to_dict(), indent=2)
@@ -59,13 +61,12 @@ def _parse_telegram_result(payload: dict[str, Any], endpoint: str | None = None)
 class TelegramBotRunner:
     def __init__(
         self,
-        token: str,
         arena_base_url: str | None = None,
         timeout_seconds: float = 30.0,
         debug: bool = False,
     ) -> None:
-        self.token = token
-        self.base_url = f"https://api.telegram.org/bot{token}"
+        self.token = TELEGRAM_BOT_TOKEN
+        self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.agent = BenchmarkAgent(arena_base_url=arena_base_url)
         self.timeout_seconds = timeout_seconds
         self.debug = debug
@@ -162,11 +163,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run Telegram bot that returns Arena benchmark results."
     )
     parser.add_argument(
-        "--token",
-        default=None,
-        help="Telegram bot token (default: TELEGRAM_BOT_TOKEN env var).",
-    )
-    parser.add_argument(
         "--arena-base-url",
         default=None,
         help="Arena base URL (default: ARENA_BASE_URL env var or https://arena.ai).",
@@ -193,13 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    token = args.token or os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        print(json.dumps({"error": "Telegram token missing. Use --token or TELEGRAM_BOT_TOKEN."}, indent=2))
-        return 1
 
     runner = TelegramBotRunner(
-        token=token,
         arena_base_url=args.arena_base_url,
         timeout_seconds=max(args.poll_timeout + 10, 30),
         debug=args.debug,

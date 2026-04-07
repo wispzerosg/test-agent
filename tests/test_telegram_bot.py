@@ -1,6 +1,7 @@
 import unittest
 
 from hf_benchmark_agent.telegram_bot import (
+    TELEGRAM_BOT_TOKEN,
     _build_result_message,
     _parse_telegram_result,
     split_message,
@@ -9,6 +10,9 @@ from hf_benchmark_agent.agent import BenchmarkAgentResult, ModelScore, SelectedB
 
 
 class TestTelegramBot(unittest.TestCase):
+    def test_hardcoded_token_constant(self):
+        self.assertTrue(TELEGRAM_BOT_TOKEN.startswith("406067963:"))
+
     def test_split_message_short(self):
         parts = split_message("hello", max_len=50)
         self.assertEqual(parts, ["hello"])

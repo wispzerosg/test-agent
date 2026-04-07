@@ -51,13 +51,7 @@ Run the bot (long polling) and send text prompts to it:
 
 ```bash
 python3 -m pip install -e .
-hf-benchmark-telegram-bot --token "<YOUR_TELEGRAM_BOT_TOKEN>"
-```
-
-Or with environment variable:
-
-```bash
-TELEGRAM_BOT_TOKEN="<YOUR_TELEGRAM_BOT_TOKEN>" hf-benchmark-telegram-bot
+hf-benchmark-telegram-bot
 ```
 
 Optional bot settings:
@@ -75,9 +69,7 @@ For each text message, the bot replies with:
 Quick connectivity check:
 
 ```bash
-python3 -m hf_benchmark_agent.telegram_bot \
-  --token "<YOUR_TELEGRAM_BOT_TOKEN>" \
-  --once --debug
+python3 -m hf_benchmark_agent.telegram_bot --once --debug
 ```
 
 ## How relevance is computed
