@@ -80,16 +80,23 @@ class BenchmarkAgent:
         if not ranked:
             raise RuntimeError("Could not rank any benchmark candidates.")
 
-        selected_dataset_id, relevance_score = ranked[0]
-        leaderboard_url = (
-            f"https://huggingface.co/api/datasets/{quote(selected_dataset_id, safe='')}/leaderboard"
-        )
-        leaderboard_payload = await self._get_json(leaderboard_url)
-        top_models = self._extract_top_models(leaderboard_payload, limit=5)
-        if not top_models:
-            raise RuntimeError(
-                f"Selected benchmark '{selected_dataset_id}' has no leaderboard scores."
+        selected_dataset_id: str | None = None
+        relevance_score = 0.0
+        top_models: list[ModelScore] = []
+        for candidate_dataset_id, candidate_score in ranked:
+            leaderboard_url = (
+                f"https://huggingface.co/api/datasets/{quote(candidate_dataset_id, safe='')}/leaderboard"
             )
+            leaderboard_payload = await self._safe_get_json(leaderboard_url)
+            candidate_top_models = self._extract_top_models(leaderboard_payload, limit=5)
+            if candidate_top_models:
+                selected_dataset_id = candidate_dataset_id
+                relevance_score = candidate_score
+                top_models = candidate_top_models
+                break
+
+        if selected_dataset_id is None:
+            raise RuntimeError("No candidate benchmark returned leaderboard scores.")
 
         return BenchmarkAgentResult(
             request=request,

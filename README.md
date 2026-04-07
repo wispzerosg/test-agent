@@ -9,6 +9,13 @@ Lightweight agent that:
 ## Quick start
 
 ```bash
+python3 -m pip install -e .
+hf-benchmark-agent "best coding model"
+```
+
+Alternative module form:
+
+```bash
 python3 -m hf_benchmark_agent.cli "best coding model"
 ```
 
