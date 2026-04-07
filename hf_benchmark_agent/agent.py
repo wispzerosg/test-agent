@@ -50,6 +50,10 @@ class ModelScore:
     model_id: str
     score: float | None
     verified: bool | None
+    input_cost_per_million: float | None
+    output_cost_per_million: float | None
+    price_per_image: float | None
+    price_per_second: float | None
 
 
 @dataclass(frozen=True)
@@ -196,7 +200,22 @@ class BenchmarkAgent:
             if score is None:
                 score = self._to_float(entry.get("value"))
             verified = entry.get("verified") if isinstance(entry.get("verified"), bool) else None
-            models.append(ModelScore(rank=rank, model_id=model_id, score=score, verified=verified))
+            input_cost_per_million = self._to_float(entry.get("inputPricePerMillion"))
+            output_cost_per_million = self._to_float(entry.get("outputPricePerMillion"))
+            price_per_image = self._to_float(entry.get("pricePerImage"))
+            price_per_second = self._to_float(entry.get("pricePerSecond"))
+            models.append(
+                ModelScore(
+                    rank=rank,
+                    model_id=model_id,
+                    score=score,
+                    verified=verified,
+                    input_cost_per_million=input_cost_per_million,
+                    output_cost_per_million=output_cost_per_million,
+                    price_per_image=price_per_image,
+                    price_per_second=price_per_second,
+                )
+            )
 
         models.sort(
             key=lambda item: (
@@ -222,6 +241,10 @@ class BenchmarkAgent:
                     model_id=model.model_id,
                     score=normalized_score,
                     verified=model.verified,
+                    input_cost_per_million=model.input_cost_per_million,
+                    output_cost_per_million=model.output_cost_per_million,
+                    price_per_image=model.price_per_image,
+                    price_per_second=model.price_per_second,
                 )
             )
         return normalized

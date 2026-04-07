@@ -19,51 +19,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Arena base URL (default: ARENA_BASE_URL env var or https://arena.ai).",
     )
-    parser.add_argument(
-        "--no-plot",
-        action="store_true",
-        help="Disable terminal ASCII plot output.",
-    )
     return parser
 
 
-def _format_score(value: float | None) -> str:
+def _format_cost(value: float | None) -> str:
     if value is None:
         return "n/a"
-    return f"{value:.2f}"
+    return f"{value:.4f}"
 
 
-def _build_score_plot(top_models: list[ModelScore], width: int = 40) -> str:
-    scored = [m for m in top_models if m.score is not None]
-    if not scored:
-        return "Top-5 score plot: no numeric scores available."
-
-    min_score = min(m.score for m in scored if m.score is not None)
-    max_score = max(m.score for m in scored if m.score is not None)
-    score_span = max(max_score - min_score, 1e-9)
-
-    lines = ["Top-5 score plot (relative scale):"]
+def _build_cost_table(top_models: list[ModelScore]) -> str:
+    lines = ["Top-5 cost summary:"]
+    lines.append("rank | model                        | in$/1M  | out$/1M | $/image | $/second")
     for model in top_models:
         label = f"#{model.rank}" if model.rank is not None else "-"
         name = model.model_id
         if len(name) > 28:
             name = name[:25] + "..."
-
-        if model.score is None:
-            bar = ""
-        else:
-            normalized = (model.score - min_score) / score_span
-            bar_len = max(1, int(round(normalized * width)))
-            bar = "█" * bar_len
-        lines.append(f"{label:>4} | {name:<28} | {_format_score(model.score):>8} | {bar}")
+        lines.append(
+            f"{label:>4} | {name:<28} | "
+            f"{_format_cost(model.input_cost_per_million):>7} | "
+            f"{_format_cost(model.output_cost_per_million):>7} | "
+            f"{_format_cost(model.price_per_image):>7} | "
+            f"{_format_cost(model.price_per_second):>8}"
+        )
     return "\n".join(lines)
 
 
-def _print_result(result: BenchmarkAgentResult, show_plot: bool) -> None:
+def _print_result(result: BenchmarkAgentResult) -> None:
     print(json.dumps(result.to_dict(), indent=2))
-    if show_plot:
-        print()
-        print(_build_score_plot(result.top_models))
+    print()
+    print(_build_cost_table(result.top_models))
 
 
 def main() -> int:
@@ -76,7 +62,7 @@ def main() -> int:
         print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
         return 1
 
-    _print_result(result, show_plot=not args.no_plot)
+    _print_result(result)
     return 0
 
 

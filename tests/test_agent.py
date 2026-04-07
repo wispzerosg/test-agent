@@ -4,14 +4,14 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from hf_benchmark_agent.agent import BenchmarkAgent, BenchmarkAgentResult, ModelScore, SelectedBenchmark
-from hf_benchmark_agent.cli import _build_score_plot, main
+from hf_benchmark_agent.cli import _build_cost_table, main
 
 
 class FakeBenchmarkAgent(BenchmarkAgent):
     async def _safe_get_text(self, url: str) -> str:
         if url.endswith("/leaderboard/code"):
             return """
-<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"model/a\\",\\"rating\\":66.1},{\\"rank\\":2,\\"modelDisplayName\\":\\"model/b\\",\\"rating\\":64.0},{\\"rank\\":3,\\"modelDisplayName\\":\\"model/c\\",\\"rating\\":63.5},{\\"rank\\":4,\\"modelDisplayName\\":\\"model/d\\",\\"rating\\":62.9},{\\"rank\\":5,\\"modelDisplayName\\":\\"model/e\\",\\"rating\\":62.0},{\\"rank\\":6,\\"modelDisplayName\\":\\"model/f\\",\\"rating\\":61.0}]}"])</script>
+<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"model/a\\",\\"rating\\":66.1,\\"inputPricePerMillion\\":0.5,\\"outputPricePerMillion\\":1.0},{\\"rank\\":2,\\"modelDisplayName\\":\\"model/b\\",\\"rating\\":64.0,\\"inputPricePerMillion\\":0.6,\\"outputPricePerMillion\\":1.2},{\\"rank\\":3,\\"modelDisplayName\\":\\"model/c\\",\\"rating\\":63.5},{\\"rank\\":4,\\"modelDisplayName\\":\\"model/d\\",\\"rating\\":62.9},{\\"rank\\":5,\\"modelDisplayName\\":\\"model/e\\",\\"rating\\":62.0},{\\"rank\\":6,\\"modelDisplayName\\":\\"model/f\\",\\"rating\\":61.0}]}"])</script>
 """
         if url.endswith("/leaderboard/text"):
             return """
@@ -42,16 +42,30 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.top_models), 5)
         self.assertEqual(result.top_models[0].model_id, "model/a")
         self.assertAlmostEqual(result.top_models[0].score or 0.0, 66.1 / ((66.1 + 64.0 + 63.5 + 62.9 + 62.0 + 61.0) / 6))
+        self.assertEqual(result.top_models[0].input_cost_per_million, 0.5)
+        self.assertEqual(result.top_models[0].output_cost_per_million, 1.0)
 
     def test_extract_top_models_supports_arena_fields(self):
         agent = BenchmarkAgent()
         entries = [
-            {"rank": "1", "modelDisplayName": "org/m1", "rating": "91.2"},
+            {
+                "rank": "1",
+                "modelDisplayName": "org/m1",
+                "rating": "91.2",
+                "inputPricePerMillion": "2.5",
+                "outputPricePerMillion": "10.0",
+                "pricePerImage": "0.04",
+                "pricePerSecond": "0.20",
+            },
             {"rank": "2", "modelDisplayName": "org/m2", "rating": "90.0"},
         ]
         models = agent._extract_top_models_from_entries(entries, limit=5)
         self.assertEqual([m.model_id for m in models], ["org/m1", "org/m2"])
         self.assertAlmostEqual(models[0].score or 0.0, 91.2 / 90.6)
+        self.assertEqual(models[0].input_cost_per_million, 2.5)
+        self.assertEqual(models[0].output_cost_per_million, 10.0)
+        self.assertEqual(models[0].price_per_image, 0.04)
+        self.assertEqual(models[0].price_per_second, 0.2)
 
     def test_extract_arena_leaderboards_from_html(self):
         agent = BenchmarkAgent()
@@ -96,19 +110,37 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         # Mean is computed over rank 1..100 => 50.5
         self.assertAlmostEqual(models[0].score or 0.0, 1.0 / 50.5)
 
-    def test_score_plot_renders(self):
-        plot = _build_score_plot(
+    def test_cost_table_renders(self):
+        table = _build_cost_table(
             [
-                ModelScore(rank=1, model_id="a", score=100.0, verified=None),
-                ModelScore(rank=2, model_id="b", score=50.0, verified=None),
+                ModelScore(
+                    rank=1,
+                    model_id="a",
+                    score=1.1,
+                    verified=None,
+                    input_cost_per_million=2.0,
+                    output_cost_per_million=8.0,
+                    price_per_image=None,
+                    price_per_second=None,
+                ),
+                ModelScore(
+                    rank=2,
+                    model_id="b",
+                    score=1.0,
+                    verified=None,
+                    input_cost_per_million=None,
+                    output_cost_per_million=None,
+                    price_per_image=0.03,
+                    price_per_second=0.15,
+                ),
             ]
         )
-        self.assertIn("Top-5 score plot", plot)
-        self.assertIn("a", plot)
-        self.assertIn("b", plot)
-        self.assertIn("█", plot)
+        self.assertIn("Top-5 cost summary", table)
+        self.assertIn("a", table)
+        self.assertIn("b", table)
+        self.assertIn("in$/1M", table)
 
-    def test_cli_prints_json_and_plot(self):
+    def test_cli_prints_json_and_costs(self):
         fake_result = BenchmarkAgentResult(
             request="best coding model",
             selected_benchmark=SelectedBenchmark(
@@ -117,8 +149,26 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
                 relevance_score=1.2,
             ),
             top_models=[
-                ModelScore(rank=1, model_id="model/a", score=100.0, verified=None),
-                ModelScore(rank=2, model_id="model/b", score=80.0, verified=None),
+                ModelScore(
+                    rank=1,
+                    model_id="model/a",
+                    score=1.2,
+                    verified=None,
+                    input_cost_per_million=2.0,
+                    output_cost_per_million=8.0,
+                    price_per_image=None,
+                    price_per_second=None,
+                ),
+                ModelScore(
+                    rank=2,
+                    model_id="model/b",
+                    score=1.1,
+                    verified=None,
+                    input_cost_per_million=1.5,
+                    output_cost_per_million=6.0,
+                    price_per_image=0.02,
+                    price_per_second=0.1,
+                ),
             ],
         )
 
@@ -131,7 +181,7 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         output = stdout.getvalue()
         self.assertEqual(exit_code, 0)
         self.assertIn('"dataset_id": "arena/code:webdev"', output)
-        self.assertIn("Top-5 score plot", output)
+        self.assertIn("Top-5 cost summary", output)
 
 
 if __name__ == "__main__":

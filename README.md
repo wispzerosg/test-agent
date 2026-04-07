@@ -37,6 +37,13 @@ The CLI prints JSON with:
 - `selected_benchmark`: Arena leaderboard chosen as most relevant
 - `top_models`: top 5 model entries (`rank`, `model_id`, `score`, `verified`)
   - `score` is normalized as: `model_score / mean(top_100_scores)`
+  - includes cost fields when available:
+    - `input_cost_per_million`
+    - `output_cost_per_million`
+    - `price_per_image`
+    - `price_per_second`
+
+After JSON output, the CLI prints a terminal cost summary table for the top-5 models.
 
 ## How relevance is computed
 
