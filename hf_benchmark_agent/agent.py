@@ -205,7 +205,26 @@ class BenchmarkAgent:
                 -item.score if item.score is not None else 0.0,
             )
         )
-        return models[:limit]
+        top_100_scores = [m.score for m in models[:100] if m.score is not None]
+        if not top_100_scores:
+            return models[:limit]
+
+        top_100_mean = sum(top_100_scores) / len(top_100_scores)
+        if top_100_mean == 0:
+            return models[:limit]
+
+        normalized: list[ModelScore] = []
+        for model in models[:limit]:
+            normalized_score = model.score / top_100_mean if model.score is not None else None
+            normalized.append(
+                ModelScore(
+                    rank=model.rank,
+                    model_id=model.model_id,
+                    score=normalized_score,
+                    verified=model.verified,
+                )
+            )
+        return normalized
 
     def _to_int(self, value: Any) -> int | None:
         if value is None:

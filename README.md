@@ -36,6 +36,7 @@ The CLI prints JSON with:
 - `request`: original text query
 - `selected_benchmark`: Arena leaderboard chosen as most relevant
 - `top_models`: top 5 model entries (`rank`, `model_id`, `score`, `verified`)
+  - `score` is normalized as: `model_score / mean(top_100_scores)`
 
 ## How relevance is computed
 

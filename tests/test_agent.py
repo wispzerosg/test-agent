@@ -41,7 +41,7 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.selected_benchmark.dataset_id, "arena/code:webdev")
         self.assertEqual(len(result.top_models), 5)
         self.assertEqual(result.top_models[0].model_id, "model/a")
-        self.assertEqual(result.top_models[0].score, 66.1)
+        self.assertAlmostEqual(result.top_models[0].score or 0.0, 66.1 / ((66.1 + 64.0 + 63.5 + 62.9 + 62.0 + 61.0) / 6))
 
     def test_extract_top_models_supports_arena_fields(self):
         agent = BenchmarkAgent()
@@ -51,7 +51,7 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         ]
         models = agent._extract_top_models_from_entries(entries, limit=5)
         self.assertEqual([m.model_id for m in models], ["org/m1", "org/m2"])
-        self.assertAlmostEqual(models[0].score or 0.0, 91.2)
+        self.assertAlmostEqual(models[0].score or 0.0, 91.2 / 90.6)
 
     def test_extract_arena_leaderboards_from_html(self):
         agent = BenchmarkAgent()
@@ -85,6 +85,16 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         result = await agent.run("math reasoning benchmark")
         self.assertEqual(result.selected_benchmark.dataset_id, "arena/text:overall")
         self.assertEqual(result.top_models[0].model_id, "org/r1")
+        self.assertAlmostEqual(result.top_models[0].score or 0.0, 42.0 / ((42.0 + 39.5) / 2))
+
+    def test_scores_use_top_100_mean(self):
+        agent = BenchmarkAgent()
+        entries = []
+        for rank in range(1, 121):
+            entries.append({"rank": rank, "modelDisplayName": f"m{rank}", "rating": float(rank)})
+        models = agent._extract_top_models_from_entries(entries, limit=5)
+        # Mean is computed over rank 1..100 => 50.5
+        self.assertAlmostEqual(models[0].score or 0.0, 1.0 / 50.5)
 
     def test_score_plot_renders(self):
         plot = _build_score_plot(
