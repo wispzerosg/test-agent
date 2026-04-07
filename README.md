@@ -45,6 +45,32 @@ The CLI prints JSON with:
 
 After JSON output, the CLI prints a terminal cost summary table for the top-5 models.
 
+## Telegram bot integration
+
+Run the bot (long polling) and send text prompts to it:
+
+```bash
+python3 -m pip install -e .
+hf-benchmark-telegram-bot --token "<YOUR_TELEGRAM_BOT_TOKEN>"
+```
+
+Or with environment variable:
+
+```bash
+TELEGRAM_BOT_TOKEN="<YOUR_TELEGRAM_BOT_TOKEN>" hf-benchmark-telegram-bot
+```
+
+Optional bot settings:
+
+- `--arena-base-url` (default: `https://arena.ai`)
+- `--poll-timeout` (default: `30`)
+
+For each text message, the bot replies with:
+
+1. selected Arena leaderboard
+2. top-5 normalized model scores
+3. top-5 cost summary table
+
 ## How relevance is computed
 
 The agent scores candidate Arena leaderboard candidates using:
