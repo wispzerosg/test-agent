@@ -4,9 +4,10 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from typing import Any
 
-import httpx
+import requests
 
 from .agent import BenchmarkAgent, BenchmarkAgentResult
 from .cli import _build_cost_table
@@ -46,24 +47,28 @@ class TelegramBotRunner:
         self.agent = BenchmarkAgent(arena_base_url=arena_base_url)
         self.timeout_seconds = timeout_seconds
 
-    async def run_forever(self) -> None:
+    def run_forever(self, poll_timeout: int = 30) -> None:
         offset: int | None = None
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            while True:
-                updates = await self._get_updates(client, offset=offset, timeout=30)
+        while True:
+            try:
+                updates = self._get_updates(offset=offset, timeout=poll_timeout)
                 for update in updates:
                     update_id = update.get("update_id")
                     if isinstance(update_id, int):
                         offset = update_id + 1
-                    await self._handle_update(client, update)
+                    self._handle_update(update)
+            except requests.RequestException:
+                time.sleep(2)
 
-    async def _get_updates(
-        self, client: httpx.AsyncClient, offset: int | None, timeout: int
-    ) -> list[dict[str, Any]]:
+    def _get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"timeout": timeout}
         if offset is not None:
             params["offset"] = offset
-        response = await client.get(f"{self.base_url}/getUpdates", params=params)
+        response = requests.get(
+            f"{self.base_url}/getUpdates",
+            params=params,
+            timeout=self.timeout_seconds,
+        )
         response.raise_for_status()
         payload = response.json()
         if not payload.get("ok"):
@@ -71,15 +76,14 @@ class TelegramBotRunner:
         result = payload.get("result")
         return result if isinstance(result, list) else []
 
-    async def _send_message(
-        self, client: httpx.AsyncClient, chat_id: int | str, text: str
-    ) -> None:
-        await client.post(
+    def _send_message(self, chat_id: int | str, text: str) -> None:
+        requests.post(
             f"{self.base_url}/sendMessage",
             json={"chat_id": chat_id, "text": text},
+            timeout=self.timeout_seconds,
         )
 
-    async def _handle_update(self, client: httpx.AsyncClient, update: dict[str, Any]) -> None:
+    def _handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")
         if not isinstance(message, dict):
             return
@@ -95,22 +99,21 @@ class TelegramBotRunner:
         if not text:
             return
         if text in {"/start", "/help"}:
-            await self._send_message(
-                client,
+            self._send_message(
                 chat_id,
                 "Send any text request (e.g. 'best coding model') and I will return top-5 models with normalized scores and costs.",
             )
             return
 
-        await self._send_message(client, chat_id, "Working on your request...")
+        self._send_message(chat_id, "Working on your request...")
         try:
-            result = await self.agent.run(text)
+            result = asyncio.run(self.agent.run(text))
             output = _build_result_message(result)
         except Exception as exc:
             output = json.dumps({"error": str(exc)}, indent=2)
 
         for chunk in split_message(output):
-            await self._send_message(client, chat_id, chunk)
+            self._send_message(chat_id, chunk)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -149,7 +152,7 @@ def main() -> int:
         arena_base_url=args.arena_base_url,
         timeout_seconds=max(args.poll_timeout + 10, 30),
     )
-    asyncio.run(runner.run_forever())
+    runner.run_forever(poll_timeout=args.poll_timeout)
     return 0
 
 
