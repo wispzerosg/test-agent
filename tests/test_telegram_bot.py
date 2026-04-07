@@ -1,6 +1,10 @@
 import unittest
 
-from hf_benchmark_agent.telegram_bot import _build_result_message, split_message
+from hf_benchmark_agent.telegram_bot import (
+    _build_result_message,
+    _parse_telegram_result,
+    split_message,
+)
 from hf_benchmark_agent.agent import BenchmarkAgentResult, ModelScore, SelectedBenchmark
 
 
@@ -40,6 +44,16 @@ class TestTelegramBot(unittest.TestCase):
         text = _build_result_message(result)
         self.assertIn('"dataset_id": "arena/code:webdev"', text)
         self.assertIn("Top-5 cost summary", text)
+
+    def test_parse_telegram_result_valid(self):
+        payload = {"ok": True, "result": [{"update_id": 1}]}
+        parsed = _parse_telegram_result(payload, endpoint="getUpdates")
+        self.assertEqual(parsed, [{"update_id": 1}])
+
+    def test_parse_telegram_result_not_ok_raises(self):
+        payload = {"ok": False, "description": "Unauthorized"}
+        with self.assertRaises(RuntimeError):
+            _parse_telegram_result(payload, endpoint="getUpdates")
 
 
 if __name__ == "__main__":

@@ -64,12 +64,21 @@ Optional bot settings:
 
 - `--arena-base-url` (default: `https://arena.ai`)
 - `--poll-timeout` (default: `30`)
+- `--debug` (prints polling and send/receive diagnostics)
 
 For each text message, the bot replies with:
 
 1. selected Arena leaderboard
 2. top-5 normalized model scores
 3. top-5 cost summary table
+
+Quick connectivity check:
+
+```bash
+python3 -m hf_benchmark_agent.telegram_bot \
+  --token "<YOUR_TELEGRAM_BOT_TOKEN>" \
+  --once --debug
+```
 
 ## How relevance is computed
 
