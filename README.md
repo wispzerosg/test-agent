@@ -47,7 +47,13 @@ After JSON output, the CLI prints a terminal cost summary table for the top-5 mo
 
 ## Telegram output forwarding
 
-Each CLI request sends a copy of output to Telegram (using the hardcoded token).
+Each CLI request sends a Telegram copy (using the hardcoded token) that contains:
+
+- summary of the request/result
+- top-5 model scores (compact text)
+- rating link to the selected leaderboard
+
+It does **not** send raw JSON to Telegram.
 
 ```bash
 python3 -m pip install -e .
