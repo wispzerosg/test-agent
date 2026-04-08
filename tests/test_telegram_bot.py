@@ -63,5 +63,57 @@ class TestTelegramBot(unittest.TestCase):
         self.assertEqual(extracted[0]["request"], "best coding model")
         self.assertEqual(extracted[1]["request"], "best vision model")
 
+    def test_extract_benchmark_requests_skips_answered_ids(self):
+        now = 1_700_000_000
+        updates = [
+            {
+                "update_id": 10,
+                "message": {
+                    "date": now - 100,
+                    "text": "benchmark best coding model",
+                    "chat": {"id": 123},
+                },
+            },
+            {
+                "update_id": 11,
+                "message": {
+                    "date": now - 200,
+                    "text": "/benchmark best vision model",
+                    "chat": {"id": 124},
+                },
+            },
+            {
+                "update_id": 12,
+                "message": {
+                    "date": now - 300,
+                    "text": "benchmark reasoning model",
+                    "chat": {"id": 125},
+                },
+            },
+        ]
+        extracted = _extract_benchmark_requests(
+            updates, now_ts=now, window_hours=24, answered_update_ids={10, 12},
+        )
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0]["request"], "best vision model")
+        self.assertEqual(extracted[0]["update_id"], 11)
+
+    def test_extract_benchmark_requests_empty_answered_ids(self):
+        now = 1_700_000_000
+        updates = [
+            {
+                "update_id": 10,
+                "message": {
+                    "date": now - 100,
+                    "text": "benchmark test query",
+                    "chat": {"id": 123},
+                },
+            },
+        ]
+        extracted = _extract_benchmark_requests(
+            updates, now_ts=now, window_hours=24, answered_update_ids=set(),
+        )
+        self.assertEqual(len(extracted), 1)
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 import io
+import json
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -7,16 +8,44 @@ from hf_benchmark_agent.agent import BenchmarkAgent, BenchmarkAgentResult, Model
 from hf_benchmark_agent.cli import _build_cost_table, main
 
 
+def _make_leaderboard_html(arena_slug, leaderboard_slug, category, entries_json):
+    return (
+        '<script>self.__next_f.push([1,"x:'
+        + json.dumps({
+            "arenaSlug": arena_slug,
+            "leaderboardSlug": leaderboard_slug,
+            "params": {"category": category},
+            "entries": entries_json,
+        }).replace('"', '\\"')
+        + '"])</script>'
+    )
+
+
 class FakeBenchmarkAgent(BenchmarkAgent):
     async def _safe_get_text(self, url: str) -> str:
         if url.endswith("/leaderboard/code"):
-            return """
-<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"code\\",\\"leaderboardSlug\\":\\"webdev\\",\\"params\\":{\\"category\\":\\"webdev\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"model/a\\",\\"rating\\":66.1,\\"inputPricePerMillion\\":0.5,\\"outputPricePerMillion\\":1.0},{\\"rank\\":2,\\"modelDisplayName\\":\\"model/b\\",\\"rating\\":64.0,\\"inputPricePerMillion\\":0.6,\\"outputPricePerMillion\\":1.2},{\\"rank\\":3,\\"modelDisplayName\\":\\"model/c\\",\\"rating\\":63.5},{\\"rank\\":4,\\"modelDisplayName\\":\\"model/d\\",\\"rating\\":62.9},{\\"rank\\":5,\\"modelDisplayName\\":\\"model/e\\",\\"rating\\":62.0},{\\"rank\\":6,\\"modelDisplayName\\":\\"model/f\\",\\"rating\\":61.0}]}"])</script>
-"""
+            return _make_leaderboard_html("code", "webdev", "webdev", [
+                {"rank": 1, "modelDisplayName": "model/a", "rating": 66.1,
+                 "inputPricePerMillion": 0.5, "outputPricePerMillion": 1.0},
+                {"rank": 2, "modelDisplayName": "model/b", "rating": 64.0,
+                 "inputPricePerMillion": 0.6, "outputPricePerMillion": 1.2},
+                {"rank": 3, "modelDisplayName": "model/c", "rating": 63.5},
+                {"rank": 4, "modelDisplayName": "model/d", "rating": 62.9},
+                {"rank": 5, "modelDisplayName": "model/e", "rating": 62.0},
+                {"rank": 6, "modelDisplayName": "model/f", "rating": 61.0},
+            ])
         if url.endswith("/leaderboard/text"):
-            return """
-<script>self.__next_f.push([1,"x:{\\"arenaSlug\\":\\"text\\",\\"leaderboardSlug\\":\\"overall\\",\\"params\\":{\\"category\\":\\"overall\\"},\\"entries\\":[{\\"rank\\":1,\\"modelDisplayName\\":\\"text-model\\",\\"rating\\":80.0}]}"])</script>
-"""
+            return _make_leaderboard_html("text", "overall", "overall", [
+                {"rank": 1, "modelDisplayName": "text-model", "rating": 80.0},
+            ])
+        if url.endswith("/leaderboard/image-edit"):
+            return _make_leaderboard_html("image-edit", "overall", "overall", [
+                {"rank": 1, "modelDisplayName": "img-edit-model", "rating": 55.0},
+            ])
+        if url.endswith("/leaderboard/vision"):
+            return _make_leaderboard_html("vision", "overall", "overall", [
+                {"rank": 1, "modelDisplayName": "vision-model", "rating": 70.0},
+            ])
         return ""
 
 
@@ -139,6 +168,73 @@ class TestBenchmarkAgent(unittest.IsolatedAsyncioTestCase):
         self.assertIn("a", table)
         self.assertIn("b", table)
         self.assertIn("in$/1M", table)
+
+    def test_page_prioritization_quality(self):
+        """Verify the top prioritized page is correct for a range of requests."""
+        agent = BenchmarkAgent()
+        cases = [
+            ("russian language model", "text"),
+            ("best coding model", "code"),
+            ("image generation", "text-to-image"),
+            ("video editing tool", "video-edit"),
+            ("best vision model", "vision"),
+            ("document parsing", "document"),
+            ("search engine model", "search"),
+            ("math reasoning", "text"),
+            ("translate english to french", "text"),
+            ("best model for writing", "text"),
+            ("text to image", "text-to-image"),
+            ("edit my photo", "image-edit"),
+            ("best llm", "text"),
+            ("multilingual chatbot", "text"),
+            ("best model for OCR", "vision"),
+            ("generate a video", "text-to-video"),
+            ("python code assistant", "code"),
+            ("pdf extraction", "document"),
+            ("web retrieval", "search"),
+        ]
+        failures = []
+        for request, expected_page in cases:
+            tokens = agent._tokenize(request)
+            pages = agent._prioritized_pages(tokens)
+            if pages[0] != expected_page:
+                failures.append(
+                    f"{request!r}: got {pages[0]!r}, expected {expected_page!r} "
+                    f"(top-3: {pages[:3]})"
+                )
+        self.assertEqual(
+            failures, [],
+            f"{len(failures)} matching failure(s):\n" + "\n".join(failures),
+        )
+
+    def test_hint_alignment_rewards_matching_category(self):
+        agent = BenchmarkAgent()
+        request_tokens = agent._tokenize("russian language model")
+        text_context = agent._tokenize("text text overall overall")
+        image_context = agent._tokenize("image-edit image-edit overall overall")
+        text_score = agent._hint_alignment_score(request_tokens, text_context)
+        image_score = agent._hint_alignment_score(request_tokens, image_context)
+        self.assertGreater(text_score, image_score)
+
+    async def test_russian_language_model_matches_text_not_image_edit(self):
+        agent = FakeBenchmarkAgent(arena_base_url="https://arena.ai")
+        result = await agent.run("russian language model")
+        self.assertIn("text", result.selected_benchmark.dataset_id)
+        self.assertNotIn("image", result.selected_benchmark.dataset_id)
+
+    async def test_coding_request_matches_code(self):
+        agent = FakeBenchmarkAgent(arena_base_url="https://arena.ai")
+        result = await agent.run("best coding model for software engineering")
+        self.assertIn("code", result.selected_benchmark.dataset_id)
+
+    def test_hint_alignment_penalizes_wrong_category(self):
+        agent = BenchmarkAgent()
+        request_tokens = agent._tokenize("edit my photo")
+        correct_context = agent._tokenize("image-edit image-edit overall")
+        wrong_context = agent._tokenize("text-to-image text-to-image overall")
+        correct_score = agent._hint_alignment_score(request_tokens, correct_context)
+        wrong_score = agent._hint_alignment_score(request_tokens, wrong_context)
+        self.assertGreater(correct_score, wrong_score)
 
     def test_cli_prints_json_and_costs(self):
         fake_result = BenchmarkAgentResult(

@@ -25,39 +25,6 @@ def _format_cost(value: float | None) -> str:
     return f"{value:.4f}"
 
 
-def _build_cost_table(top_models: list[Any]) -> str:
-    lines = ["Top-5 cost summary:"]
-    lines.append("rank | model                        | in$/1M  | out$/1M | $/image | $/second")
-    for model in top_models:
-        if hasattr(model, "rank"):
-            rank_value = model.rank
-            model_id = model.model_id
-            input_cost = model.input_cost_per_million
-            output_cost = model.output_cost_per_million
-            per_image = model.price_per_image
-            per_second = model.price_per_second
-        else:
-            rank_value = model.get("rank")
-            model_id = str(model.get("model_id", "unknown"))
-            input_cost = model.get("input_cost_per_million")
-            output_cost = model.get("output_cost_per_million")
-            per_image = model.get("price_per_image")
-            per_second = model.get("price_per_second")
-
-        label = f"#{rank_value}" if rank_value is not None else "-"
-        name = model_id
-        if len(name) > 28:
-            name = name[:25] + "..."
-        lines.append(
-            f"{label:>4} | {name:<28} | "
-            f"{_format_cost(input_cost):>7} | "
-            f"{_format_cost(output_cost):>7} | "
-            f"{_format_cost(per_image):>7} | "
-            f"{_format_cost(per_second):>8}"
-        )
-    return "\n".join(lines)
-
-
 def build_telegram_summary_text(result: BenchmarkAgentResult) -> str:
     lines: list[str] = []
     lines.append(f"Request: {result.request}")
@@ -74,8 +41,6 @@ def build_telegram_summary_text(result: BenchmarkAgentResult) -> str:
             f"- #{rank} {model.model_id}: score={score}, "
             f"in$/1M={in_cost}, out$/1M={out_cost}"
         )
-    lines.append("")
-    lines.append(_build_cost_table(result.top_models))
     return "\n".join(lines)
 
 
@@ -120,12 +85,17 @@ def _extract_benchmark_requests(
     *,
     now_ts: int | None = None,
     window_hours: int = 24,
+    answered_update_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     now = int(time.time()) if now_ts is None else now_ts
     cutoff = now - (window_hours * 3600)
+    skip_ids = answered_update_ids or set()
     out: list[dict[str, Any]] = []
 
     for update in updates:
+        uid = update.get("update_id")
+        if isinstance(uid, int) and uid in skip_ids:
+            continue
         message = update.get("message")
         if not isinstance(message, dict):
             continue
@@ -235,15 +205,18 @@ class TelegramOutputRelay:
             sent += 1
         return sent
 
-    def send_output_copy(self, result: BenchmarkAgentResult, chat_id: int | None = None) -> int:
-        return self.send_text_copy(build_telegram_summary_text(result), chat_id=chat_id)
-
     def read_bot(
-        self, *, arena_base_url: str | None = None, hours: int = 24, limit: int = 100
+        self,
+        *,
+        arena_base_url: str | None = None,
+        hours: int = 24,
+        limit: int = 100,
+        answered_update_ids: set[int] | None = None,
     ) -> list[dict[str, Any]]:
         updates = self._get_updates(timeout=1, limit=limit)
         requests_to_process = _extract_benchmark_requests(
-            updates, window_hours=max(1, hours)
+            updates, window_hours=max(1, hours),
+            answered_update_ids=answered_update_ids,
         )
         if not requests_to_process:
             return []
@@ -292,6 +265,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read last 24h (configurable) bot history, parse 'benchmark ...' and process requests.",
     )
     parser.add_argument(
+        "--schedule",
+        action="store_true",
+        help="Run --read-bot on a recurring schedule (requires --read-bot).",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=300,
+        help="Seconds between scheduled scans (default: 300). Minimum 10.",
+    )
+    parser.add_argument(
         "--hours",
         type=int,
         default=24,
@@ -308,20 +292,70 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         help="Maximum Telegram updates to inspect in --read-bot mode (default: 100).",
     )
+    parser.add_argument(
+        "--answered-ids",
+        default="",
+        help="Comma-separated Telegram update_ids to skip (already answered).",
+    )
     return parser
+
+
+def _parse_answered_ids(raw: str) -> set[int]:
+    if not raw or not raw.strip():
+        return set()
+    out: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if token:
+            try:
+                out.add(int(token))
+            except ValueError:
+                pass
+    return out
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.schedule and not args.read_bot:
+        print(
+            json.dumps({"error": "--schedule requires --read-bot"}, indent=2),
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.read_bot and args.schedule:
+        import logging
+        from .scheduler import BenchmarkScanScheduler
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+        scheduler = BenchmarkScanScheduler(
+            interval_seconds=max(10, args.interval),
+            hours=args.hours,
+            limit=args.limit,
+            arena_base_url=args.arena_base_url,
+        )
+        try:
+            scheduler.run_forever()
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+            return 1
+        return 0
+
     relay = TelegramOutputRelay()
 
     if args.read_bot:
+        answered_ids = _parse_answered_ids(args.answered_ids)
         try:
             processed = relay.read_bot(
                 arena_base_url=args.arena_base_url,
                 hours=args.hours,
                 limit=args.limit,
+                answered_update_ids=answered_ids,
             )
         except Exception as exc:
             print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
@@ -345,3 +379,7 @@ def main() -> int:
         print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -5,7 +5,6 @@ import json
 import os
 import re
 from dataclasses import asdict, dataclass
-from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -31,16 +30,48 @@ ARENA_PAGE_SLUGS = [
 ]
 
 ARENA_HINTS: dict[str, set[str]] = {
-    "code": {"code", "coding", "programming", "software", "swe", "webdev", "react", "html"},
-    "text": {"chat", "assistant", "reasoning", "math", "multilingual", "translation"},
-    "vision": {"vision", "image", "vqa", "ocr", "caption", "multimodal"},
-    "document": {"document", "pdf", "file", "paper", "doc"},
-    "search": {"search", "browse", "web", "retrieval"},
-    "text-to-image": {"text-to-image", "t2i", "image generation"},
-    "image-edit": {"image edit", "inpainting", "edit image"},
-    "text-to-video": {"text-to-video", "video generation", "t2v"},
-    "image-to-video": {"image-to-video", "i2v"},
-    "video-edit": {"video edit", "video-edit"},
+    "code": {
+        "code", "coding", "programming", "software", "swe", "webdev",
+        "react", "html", "javascript", "python", "developer", "engineering",
+        "debug", "algorithm", "compiler", "api",
+    },
+    "text": {
+        "chat", "assistant", "reasoning", "math", "multilingual", "translation",
+        "language", "llm", "chatbot", "conversation",
+        "writing", "summarization", "summary", "question", "answering",
+        "russian", "english", "chinese", "french", "german", "spanish",
+        "japanese", "korean", "arabic", "hindi", "italian", "portuguese",
+        "dutch", "turkish", "polish", "swedish", "hebrew", "thai",
+        "nlu", "nlp", "creative",
+    },
+    "vision": {
+        "vision", "vqa", "ocr", "caption", "multimodal", "visual",
+        "recognition", "detection", "classify", "segmentation",
+        "understand",
+    },
+    "document": {"document", "pdf", "file", "paper", "doc", "scan", "extract"},
+    "search": {"search", "browse", "retrieval", "rag", "lookup", "index"},
+    "text-to-image": {"generation", "generate", "create", "draw", "paint", "t2i", "diffusion"},
+    "image-edit": {"inpainting", "editing", "modify", "retouch", "transform"},
+    "text-to-video": {"t2v", "animate", "animation"},
+    "image-to-video": {"i2v"},
+    "video-edit": {"editing", "modify", "trim", "cut"},
+}
+
+MEDIA_SCOPED_TOKENS: dict[str, set[str]] = {
+    "text-to-image": {"image", "picture", "photo", "art", "illustration"},
+    "image-edit": {"image", "picture", "photo"},
+    "text-to-video": {"video", "clip", "film", "movie"},
+    "image-to-video": {"video", "clip", "image"},
+    "video-edit": {"video", "clip"},
+}
+
+PAGE_NEGATIVE_TOKENS: dict[str, set[str]] = {
+    "text-to-image": {"edit", "editing", "modify"},
+    "image-edit": {"generate", "generation", "create", "draw"},
+    "text-to-video": {"edit", "editing"},
+    "image-to-video": {"edit", "editing"},
+    "video-edit": {"generate", "generation", "create"},
 }
 
 
@@ -149,8 +180,7 @@ class BenchmarkAgent:
                 context_tokens = self._tokenize(context)
                 overlap = len(request_tokens & context_tokens)
                 hint_score = self._hint_alignment_score(request_tokens, context_tokens)
-                ratio = SequenceMatcher(None, request.lower(), context.lower()).ratio()
-                relevance = overlap * 2.0 + hint_score + ratio
+                relevance = overlap * 3.0 + hint_score
                 ranked.append(
                     ArenaLeaderboardCandidate(
                         page_slug=page_slug,
@@ -169,12 +199,23 @@ class BenchmarkAgent:
     ) -> float:
         score = 0.0
         for page_slug, hint_tokens in ARENA_HINTS.items():
-            request_hit = request_tokens & hint_tokens
-            context_hit = context_tokens & (hint_tokens | self._tokenize(page_slug))
+            slug_tokens = self._tokenize(page_slug)
+            media_tokens = MEDIA_SCOPED_TOKENS.get(page_slug, set())
+            negative_tokens = PAGE_NEGATIVE_TOKENS.get(page_slug, set())
+
+            all_page_tokens = hint_tokens | media_tokens
+            request_hit = request_tokens & all_page_tokens
+            context_hit = context_tokens & (all_page_tokens | slug_tokens)
+
             if request_hit and context_hit:
-                score += 1.4 + (0.2 * len(request_hit & context_hit))
+                score += 2.0 + (0.5 * len(request_hit & context_hit))
             elif request_hit and not context_hit:
-                score -= 0.75
+                score -= 1.5
+
+            neg_hit = request_tokens & negative_tokens
+            if neg_hit and context_hit:
+                score -= 1.0 * len(neg_hit)
+
         return score
 
     def _extract_top_models_from_entries(self, entries: list[Any], limit: int) -> list[ModelScore]:
@@ -273,13 +314,19 @@ class BenchmarkAgent:
         for slug in ARENA_PAGE_SLUGS:
             slug_tokens = self._tokenize(slug)
             hint_tokens = ARENA_HINTS.get(slug, set())
-            overlap = len(request_tokens & (slug_tokens | hint_tokens))
-            score = overlap + (0.25 * SequenceMatcher(None, " ".join(sorted(request_tokens)), slug).ratio())
+            media_tokens = MEDIA_SCOPED_TOKENS.get(slug, set())
+            negative_tokens = PAGE_NEGATIVE_TOKENS.get(slug, set())
+
+            hint_overlap = len(request_tokens & hint_tokens)
+            slug_overlap = len(request_tokens & slug_tokens)
+            media_overlap = len(request_tokens & media_tokens)
+            neg_overlap = len(request_tokens & negative_tokens)
+
+            score = (hint_overlap * 2.0) + (slug_overlap * 1.5) + (media_overlap * 1.0) - (neg_overlap * 1.0)
             scored.append((slug, score))
 
         scored.sort(key=lambda item: item[1], reverse=True)
         ordered = [slug for slug, _ in scored]
-        # Keep traversal bounded while still allowing fallback exploration.
         return ordered[:4] + [slug for slug in ordered[4:] if slug not in ordered[:4]]
 
     async def _safe_get_text(self, url: str) -> str:
