@@ -1,0 +1,22 @@
+[project]
+name = "hf-benchmark-mcp-agent"
+version = "0.1.0"
+description = "Agent that maps text requests to Arena leaderboard top models."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.28.0",
+  "requests>=2.32.0",
+]
+
+[project.scripts]
+hf-benchmark-agent = "hf_benchmark_agent.cli:main"
+hf-benchmark-telegram-bot = "hf_benchmark_agent.telegram_bot:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hf_benchmark_agent*"]
