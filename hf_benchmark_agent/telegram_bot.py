@@ -85,12 +85,17 @@ def _extract_benchmark_requests(
     *,
     now_ts: int | None = None,
     window_hours: int = 24,
+    answered_update_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     now = int(time.time()) if now_ts is None else now_ts
     cutoff = now - (window_hours * 3600)
+    skip_ids = answered_update_ids or set()
     out: list[dict[str, Any]] = []
 
     for update in updates:
+        uid = update.get("update_id")
+        if isinstance(uid, int) and uid in skip_ids:
+            continue
         message = update.get("message")
         if not isinstance(message, dict):
             continue
@@ -201,11 +206,17 @@ class TelegramOutputRelay:
         return sent
 
     def read_bot(
-        self, *, arena_base_url: str | None = None, hours: int = 24, limit: int = 100
+        self,
+        *,
+        arena_base_url: str | None = None,
+        hours: int = 24,
+        limit: int = 100,
+        answered_update_ids: set[int] | None = None,
     ) -> list[dict[str, Any]]:
         updates = self._get_updates(timeout=1, limit=limit)
         requests_to_process = _extract_benchmark_requests(
-            updates, window_hours=max(1, hours)
+            updates, window_hours=max(1, hours),
+            answered_update_ids=answered_update_ids,
         )
         if not requests_to_process:
             return []
@@ -281,7 +292,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         help="Maximum Telegram updates to inspect in --read-bot mode (default: 100).",
     )
+    parser.add_argument(
+        "--answered-ids",
+        default="",
+        help="Comma-separated Telegram update_ids to skip (already answered).",
+    )
     return parser
+
+
+def _parse_answered_ids(raw: str) -> set[int]:
+    if not raw or not raw.strip():
+        return set()
+    out: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if token:
+            try:
+                out.add(int(token))
+            except ValueError:
+                pass
+    return out
 
 
 def main() -> int:
@@ -319,11 +349,13 @@ def main() -> int:
     relay = TelegramOutputRelay()
 
     if args.read_bot:
+        answered_ids = _parse_answered_ids(args.answered_ids)
         try:
             processed = relay.read_bot(
                 arena_base_url=args.arena_base_url,
                 hours=args.hours,
                 limit=args.limit,
+                answered_update_ids=answered_ids,
             )
         except Exception as exc:
             print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)

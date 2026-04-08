@@ -172,6 +172,87 @@ class TestBenchmarkScanScheduler(unittest.TestCase):
         self.assertEqual(scheduler.arena_base_url, "https://custom.ai")
         self.assertEqual(scheduler.subprocess_timeout, 30.0)
 
+    @patch("hf_benchmark_agent.scheduler.run_scan_subprocess")
+    def test_scheduler_tracks_answered_ids_across_scans(self, mock_scan):
+        call_count = [0]
+
+        def fake_scan(**kwargs):
+            call_count[0] += 1
+            answered = kwargs.get("answered_update_ids", set())
+            if call_count[0] == 1:
+                assert not answered
+                return ScanResult(
+                    timestamp=0, returncode=0, processed=2,
+                    items=[
+                        {"chat_id": 1, "update_id": 100},
+                        {"chat_id": 2, "update_id": 101},
+                    ],
+                    error=None,
+                )
+            else:
+                assert 100 in answered
+                assert 101 in answered
+                return ScanResult(
+                    timestamp=0, returncode=0, processed=1,
+                    items=[{"chat_id": 3, "update_id": 102}],
+                    error=None,
+                )
+
+        mock_scan.side_effect = fake_scan
+
+        scheduler = BenchmarkScanScheduler(interval_seconds=10)
+
+        def stop_after_two():
+            import time
+            while scheduler.scan_count < 2:
+                time.sleep(0.05)
+            scheduler.stop()
+
+        stopper = threading.Thread(target=stop_after_two)
+        stopper.start()
+        scheduler.run_forever()
+        stopper.join(timeout=5)
+
+        self.assertEqual(scheduler.scan_count, 2)
+        self.assertEqual(scheduler.answered_update_ids, {100, 101, 102})
+
+    @patch("hf_benchmark_agent.scheduler.run_scan_subprocess")
+    def test_failed_scan_does_not_add_answered_ids(self, mock_scan):
+        mock_scan.return_value = ScanResult(
+            timestamp=0, returncode=1, processed=0, items=[], error="network error",
+        )
+
+        scheduler = BenchmarkScanScheduler(interval_seconds=10)
+
+        def stop_after_one():
+            import time
+            while scheduler.scan_count < 1:
+                time.sleep(0.05)
+            scheduler.stop()
+
+        stopper = threading.Thread(target=stop_after_one)
+        stopper.start()
+        scheduler.run_forever()
+        stopper.join(timeout=5)
+
+        self.assertEqual(scheduler.answered_update_ids, set())
+
+
+class TestBuildScanCommandAnsweredIds(unittest.TestCase):
+    def test_answered_ids_included_in_command(self):
+        cmd = _build_scan_command(answered_update_ids={100, 200, 300})
+        self.assertIn("--answered-ids", cmd)
+        ids_str = cmd[cmd.index("--answered-ids") + 1]
+        self.assertEqual(ids_str, "100,200,300")
+
+    def test_no_answered_ids_omits_flag(self):
+        cmd = _build_scan_command(answered_update_ids=None)
+        self.assertNotIn("--answered-ids", cmd)
+
+    def test_empty_answered_ids_omits_flag(self):
+        cmd = _build_scan_command(answered_update_ids=set())
+        self.assertNotIn("--answered-ids", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()

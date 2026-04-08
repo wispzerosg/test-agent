@@ -32,12 +32,15 @@ def _build_scan_command(
     hours: int = 24,
     limit: int = 100,
     arena_base_url: str | None = None,
+    answered_update_ids: set[int] | None = None,
 ) -> list[str]:
     cmd = list(_SUBPROCESS_CMD_TEMPLATE)
     cmd.extend(["--hours", str(hours)])
     cmd.extend(["--limit", str(limit)])
     if arena_base_url:
         cmd.extend(["--arena-base-url", arena_base_url])
+    if answered_update_ids:
+        cmd.extend(["--answered-ids", ",".join(str(uid) for uid in sorted(answered_update_ids))])
     return cmd
 
 
@@ -47,8 +50,12 @@ def run_scan_subprocess(
     limit: int = 100,
     arena_base_url: str | None = None,
     timeout_seconds: float = 120.0,
+    answered_update_ids: set[int] | None = None,
 ) -> ScanResult:
-    cmd = _build_scan_command(hours=hours, limit=limit, arena_base_url=arena_base_url)
+    cmd = _build_scan_command(
+        hours=hours, limit=limit, arena_base_url=arena_base_url,
+        answered_update_ids=answered_update_ids,
+    )
     ts = time.time()
 
     try:
@@ -120,6 +127,7 @@ class BenchmarkScanScheduler:
         self._stop = False
         self._scan_count = 0
         self._history: list[ScanResult] = []
+        self._answered_update_ids: set[int] = set()
 
     @property
     def scan_count(self) -> int:
@@ -129,15 +137,24 @@ class BenchmarkScanScheduler:
     def history(self) -> list[ScanResult]:
         return list(self._history)
 
+    @property
+    def answered_update_ids(self) -> set[int]:
+        return set(self._answered_update_ids)
+
     def _run_one_scan(self) -> ScanResult:
         result = run_scan_subprocess(
             hours=self.hours,
             limit=self.limit,
             arena_base_url=self.arena_base_url,
             timeout_seconds=self.subprocess_timeout,
+            answered_update_ids=self._answered_update_ids,
         )
         self._scan_count += 1
         self._history.append(result)
+        for item in result.items:
+            uid = item.get("update_id")
+            if isinstance(uid, int):
+                self._answered_update_ids.add(uid)
         return result
 
     def stop(self) -> None:
