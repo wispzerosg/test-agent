@@ -5,7 +5,7 @@ import json
 import sys
 
 from .agent import BenchmarkAgentResult, ModelScore, run_agent_sync
-from .telegram_bot import TelegramOutputRelay
+from .telegram_bot import TelegramOutputRelay, build_telegram_summary_text
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,25 +65,6 @@ def _build_summary_text(result: BenchmarkAgentResult) -> str:
     return "\n".join(lines)
 
 
-def _build_telegram_summary_text(result: BenchmarkAgentResult) -> str:
-    lines: list[str] = []
-    lines.append(f"Request: {result.request}")
-    lines.append(f"Selected benchmark: {result.selected_benchmark.dataset_id}")
-    lines.append(f"Rating link: {result.selected_benchmark.url}")
-    lines.append("")
-    lines.append("Top-5 models:")
-    for model in result.top_models:
-        rank = model.rank if model.rank is not None else "-"
-        score = "n/a" if model.score is None else f"{model.score:.4f}"
-        in_cost = _format_cost(model.input_cost_per_million)
-        out_cost = _format_cost(model.output_cost_per_million)
-        lines.append(
-            f"- #{rank} {model.model_id}: score={score}, "
-            f"in$/1M={in_cost}, out$/1M={out_cost}"
-        )
-    return "\n".join(lines)
-
-
 def _print_result(result: BenchmarkAgentResult) -> None:
     print(json.dumps(result.to_dict(), indent=2))
     print()
@@ -103,7 +84,7 @@ def main() -> int:
     _print_result(result)
     relay = TelegramOutputRelay()
     try:
-        relay.send_text_copy(_build_telegram_summary_text(result))
+        relay.send_text_copy(build_telegram_summary_text(result))
     except Exception as exc:
         print(
             json.dumps(

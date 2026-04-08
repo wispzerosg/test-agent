@@ -70,6 +70,29 @@ Manual relay command (for sending arbitrary terminal text):
 echo "custom text" | hf-benchmark-telegram-bot --stdin
 ```
 
+## read_bot function
+
+You can scan recent Telegram history for `benchmark` commands and run the agent from them:
+
+```bash
+hf-benchmark-telegram-bot --read-bot --hours 24
+```
+
+Behavior:
+- reads recent updates from Telegram (`getUpdates`)
+- filters messages from the last N hours (default `24`)
+- finds commands like:
+  - `benchmark best coding model`
+  - `/benchmark best vision model`
+- extracts the text after `benchmark`
+- runs the current Arena agent on that extracted text
+- sends summary + rating link back to the originating chat
+
+Useful options:
+- `--hours 24` history window
+- `--limit 100` max updates to inspect
+- `--arena-base-url` override Arena endpoint for processing
+
 ## How relevance is computed
 
 The agent scores candidate Arena leaderboard candidates using:
