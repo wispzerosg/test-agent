@@ -25,39 +25,6 @@ def _format_cost(value: float | None) -> str:
     return f"{value:.4f}"
 
 
-def _build_cost_table(top_models: list[Any]) -> str:
-    lines = ["Top-5 cost summary:"]
-    lines.append("rank | model                        | in$/1M  | out$/1M | $/image | $/second")
-    for model in top_models:
-        if hasattr(model, "rank"):
-            rank_value = model.rank
-            model_id = model.model_id
-            input_cost = model.input_cost_per_million
-            output_cost = model.output_cost_per_million
-            per_image = model.price_per_image
-            per_second = model.price_per_second
-        else:
-            rank_value = model.get("rank")
-            model_id = str(model.get("model_id", "unknown"))
-            input_cost = model.get("input_cost_per_million")
-            output_cost = model.get("output_cost_per_million")
-            per_image = model.get("price_per_image")
-            per_second = model.get("price_per_second")
-
-        label = f"#{rank_value}" if rank_value is not None else "-"
-        name = model_id
-        if len(name) > 28:
-            name = name[:25] + "..."
-        lines.append(
-            f"{label:>4} | {name:<28} | "
-            f"{_format_cost(input_cost):>7} | "
-            f"{_format_cost(output_cost):>7} | "
-            f"{_format_cost(per_image):>7} | "
-            f"{_format_cost(per_second):>8}"
-        )
-    return "\n".join(lines)
-
-
 def build_telegram_summary_text(result: BenchmarkAgentResult) -> str:
     lines: list[str] = []
     lines.append(f"Request: {result.request}")
@@ -74,8 +41,6 @@ def build_telegram_summary_text(result: BenchmarkAgentResult) -> str:
             f"- #{rank} {model.model_id}: score={score}, "
             f"in$/1M={in_cost}, out$/1M={out_cost}"
         )
-    lines.append("")
-    lines.append(_build_cost_table(result.top_models))
     return "\n".join(lines)
 
 
