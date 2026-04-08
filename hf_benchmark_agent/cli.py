@@ -47,24 +47,6 @@ def _build_cost_table(top_models: list[ModelScore]) -> str:
     return "\n".join(lines)
 
 
-def _build_summary_text(result: BenchmarkAgentResult) -> str:
-    lines: list[str] = []
-    lines.append(f"Request: {result.request}")
-    lines.append(
-        "Selected benchmark: "
-        f"{result.selected_benchmark.dataset_id} ({result.selected_benchmark.url})"
-    )
-    lines.append("")
-    lines.append("Top-5 models:")
-    for model in result.top_models:
-        rank = model.rank if model.rank is not None else "-"
-        score = "n/a" if model.score is None else f"{model.score:.4f}"
-        lines.append(f"- #{rank} {model.model_id}: score={score}")
-    lines.append("")
-    lines.append(_build_cost_table(result.top_models))
-    return "\n".join(lines)
-
-
 def _print_result(result: BenchmarkAgentResult) -> None:
     print(json.dumps(result.to_dict(), indent=2))
     print()

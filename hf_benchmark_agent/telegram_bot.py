@@ -235,9 +235,6 @@ class TelegramOutputRelay:
             sent += 1
         return sent
 
-    def send_output_copy(self, result: BenchmarkAgentResult, chat_id: int | None = None) -> int:
-        return self.send_text_copy(build_telegram_summary_text(result), chat_id=chat_id)
-
     def read_bot(
         self, *, arena_base_url: str | None = None, hours: int = 24, limit: int = 100
     ) -> list[dict[str, Any]]:
