@@ -78,6 +78,11 @@ def run_scan_subprocess(
         )
 
     stdout_text = proc.stdout.strip()
+    if not stdout_text:
+        return ScanResult(
+            timestamp=ts, returncode=proc.returncode, processed=0, items=[],
+            error=None,
+        )
     try:
         payload = json.loads(stdout_text)
     except (json.JSONDecodeError, ValueError):

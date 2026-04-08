@@ -80,6 +80,19 @@ class TestRunScanSubprocess(unittest.TestCase):
         result = run_scan_subprocess()
         self.assertIn("Invalid JSON", result.error)
 
+    @patch("hf_benchmark_agent.scheduler.subprocess.run")
+    def test_empty_stdout_is_not_an_error(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        result = run_scan_subprocess()
+        self.assertIsNone(result.error)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.processed, 0)
+        self.assertEqual(result.items, [])
+
 
 class TestBenchmarkScanScheduler(unittest.TestCase):
     def test_interval_minimum(self):

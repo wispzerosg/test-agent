@@ -347,3 +347,7 @@ def main() -> int:
         print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
