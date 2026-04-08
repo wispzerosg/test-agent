@@ -254,6 +254,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read last 24h (configurable) bot history, parse 'benchmark ...' and process requests.",
     )
     parser.add_argument(
+        "--schedule",
+        action="store_true",
+        help="Run --read-bot on a recurring schedule (requires --read-bot).",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=300,
+        help="Seconds between scheduled scans (default: 300). Minimum 10.",
+    )
+    parser.add_argument(
         "--hours",
         type=int,
         default=24,
@@ -276,6 +287,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.schedule and not args.read_bot:
+        print(
+            json.dumps({"error": "--schedule requires --read-bot"}, indent=2),
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.read_bot and args.schedule:
+        import logging
+        from .scheduler import BenchmarkScanScheduler
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+        scheduler = BenchmarkScanScheduler(
+            interval_seconds=max(10, args.interval),
+            hours=args.hours,
+            limit=args.limit,
+            arena_base_url=args.arena_base_url,
+        )
+        try:
+            scheduler.run_forever()
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+            return 1
+        return 0
+
     relay = TelegramOutputRelay()
 
     if args.read_bot:

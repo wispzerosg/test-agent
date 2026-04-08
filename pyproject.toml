@@ -12,6 +12,7 @@ dependencies = [
 [project.scripts]
 hf-benchmark-agent = "hf_benchmark_agent.cli:main"
 hf-benchmark-telegram-bot = "hf_benchmark_agent.telegram_bot:main"
+hf-benchmark-scheduler = "hf_benchmark_agent.scheduler:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
